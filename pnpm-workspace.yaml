@@ -1,0 +1,8 @@
+allowBuilds:
+  "@google/genai": true
+  "@parcel/watcher": true
+  protobufjs: true
+  unrs-resolver: true
+
+overrides:
+  dompurify: 3.4.13

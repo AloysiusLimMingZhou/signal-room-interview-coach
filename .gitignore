@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+
+# next
+.next/
+out/
+
+# testing
+coverage/
+output/playwright/
+
+# local environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# editors and OS
+.DS_Store
+Thumbs.db
+*.log
+*.tsbuildinfo
+
+# deployment
+.amplify-hosting/
+cdk.out/

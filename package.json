@@ -1,0 +1,47 @@
+{
+  "name": "interview-coach",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "audit:prod": "pnpm audit --prod --audit-level=moderate",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:ci": "jest --ci --coverage",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@google/genai": "^1.20.0",
+    "@monaco-editor/react": "^4.7.0",
+    "@xstate/react": "^6.0.0",
+    "lucide-react": "^0.542.0",
+    "next": "^16.1.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "xstate": "^5.23.0",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^16.1.0",
+    "jest": "^30.1.0",
+    "jest-environment-jsdom": "^30.1.0",
+    "typescript": "^5.9.0"
+  }
+}

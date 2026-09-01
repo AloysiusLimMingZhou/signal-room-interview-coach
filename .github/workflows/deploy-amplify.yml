@@ -1,0 +1,77 @@
+name: Deploy to AWS Amplify
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: amplify-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Validate deployment configuration
+        shell: bash
+        env:
+          AMPLIFY_APP_ID: ${{ vars.AMPLIFY_APP_ID }}
+          AMPLIFY_BRANCH: ${{ vars.AMPLIFY_BRANCH }}
+          AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          test -n "$AMPLIFY_APP_ID"
+          test -n "$AMPLIFY_BRANCH"
+          test -n "$AWS_DEPLOY_ROLE_ARN"
+
+      - name: Authenticate to AWS with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
+
+      - name: Start Amplify release
+        shell: bash
+        env:
+          AMPLIFY_APP_ID: ${{ vars.AMPLIFY_APP_ID }}
+          AMPLIFY_BRANCH: ${{ vars.AMPLIFY_BRANCH }}
+        run: |
+          job_id=$(aws amplify start-job \
+            --app-id "$AMPLIFY_APP_ID" \
+            --branch-name "$AMPLIFY_BRANCH" \
+            --job-type RELEASE \
+            --query 'jobSummary.jobId' \
+            --output text)
+          echo "AMPLIFY_JOB_ID=$job_id" >> "$GITHUB_ENV"
+
+      - name: Wait for deployment
+        shell: bash
+        env:
+          AMPLIFY_APP_ID: ${{ vars.AMPLIFY_APP_ID }}
+          AMPLIFY_BRANCH: ${{ vars.AMPLIFY_BRANCH }}
+        run: |
+          for attempt in {1..60}; do
+            status=$(aws amplify get-job \
+              --app-id "$AMPLIFY_APP_ID" \
+              --branch-name "$AMPLIFY_BRANCH" \
+              --job-id "$AMPLIFY_JOB_ID" \
+              --query 'job.summary.status' \
+              --output text)
+            echo "Amplify status: $status"
+            if [ "$status" = "SUCCEED" ]; then exit 0; fi
+            if [ "$status" = "FAILED" ] || [ "$status" = "CANCELLED" ]; then exit 1; fi
+            sleep 10
+          done
+          echo "Timed out waiting for Amplify"
+          exit 1
