@@ -310,3 +310,4 @@ The workflow does not store AWS access keys.
 | 2026-09-01 | Use a 60-minute ephemeral-token lifetime with a one-minute start window | Supports a 45-minute interview and planned reconnects while limiting token exposure |
 | 2026-09-01 | Gate CI on moderate-or-higher production dependency advisories | Prevent known deployable dependency vulnerabilities from reaching the prototype |
 | 2026-09-01 | Launch public P0 in mock mode; keep Gemini Live access-controlled | The token route is intentionally unauthenticated in P0 and must not expose an unbounded paid capability |
+| 2026-09-01 | Use Node 24-compatible GitHub Action majors | Avoid deprecated Node 20 action runtimes and keep the delivery pipeline on supported dependencies |
