@@ -1,13 +1,16 @@
-name: Deploy to AWS Amplify
+name: Deploy frontend to AWS Amplify (manual compatibility path)
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      confirm_next16_compatibility:
+        description: Confirm this Amplify app has passed a Next.js 16 compatibility smoke test
+        required: true
+        default: false
+        type: boolean
 
 permissions:
+  actions: read
   contents: read
   id-token: write
 
@@ -17,50 +20,89 @@ concurrency:
 
 jobs:
   deploy:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
+    env:
+      AMPLIFY_APP_ID: ${{ vars.AMPLIFY_APP_ID }}
+      AMPLIFY_BRANCH: ${{ vars.AMPLIFY_BRANCH }}
+      AWS_AMPLIFY_DEPLOY_ROLE_ARN: ${{ vars.AWS_AMPLIFY_DEPLOY_ROLE_ARN }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
+      NEXT16_COMPATIBILITY_CONFIRMED: ${{ inputs.confirm_next16_compatibility }}
+      TESTED_REVISION: ${{ github.sha }}
     steps:
       - name: Validate deployment configuration
         shell: bash
         env:
-          AMPLIFY_APP_ID: ${{ vars.AMPLIFY_APP_ID }}
-          AMPLIFY_BRANCH: ${{ vars.AMPLIFY_BRANCH }}
-          AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          test -n "$AMPLIFY_APP_ID"
-          test -n "$AMPLIFY_BRANCH"
-          test -n "$AWS_DEPLOY_ROLE_ARN"
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Amplify production releases must run from main."
+            exit 1
+          fi
+
+          if [[ "$NEXT16_COMPATIBILITY_CONFIRMED" != "true" ]]; then
+            echo "::error::This project uses Next.js 16. Amplify deployment is manual-only until the target app passes the repository's build and browser smoke tests. Re-run and explicitly confirm compatibility."
+            exit 1
+          fi
+
+          if [[ -z "$AMPLIFY_APP_ID" || -z "$AMPLIFY_BRANCH" ]]; then
+            echo "::error::Set AMPLIFY_APP_ID and AMPLIFY_BRANCH as GitHub environment variables."
+            exit 1
+          fi
+
+          if [[ ! "$AWS_AMPLIFY_DEPLOY_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/.+ ]]; then
+            echo "::error::Set AWS_AMPLIFY_DEPLOY_ROLE_ARN as a GitHub environment variable to a dedicated OIDC role for Amplify releases."
+            exit 1
+          fi
+          expected_account_id="${AWS_AMPLIFY_DEPLOY_ROLE_ARN#arn:aws:iam::}"
+          expected_account_id="${expected_account_id%%:*}"
+          echo "EXPECTED_AWS_ACCOUNT_ID=$expected_account_id" >> "$GITHUB_ENV"
+
+          successful_runs=$(gh api \
+            "/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$TESTED_REVISION&event=push&status=success&per_page=1" \
+            --jq '.total_count')
+          if [[ "$successful_runs" -lt 1 ]]; then
+            echo "::error::Amplify production requires successful push CI for $TESTED_REVISION."
+            exit 1
+          fi
 
       - name: Authenticate to AWS with GitHub OIDC
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
+          role-to-assume: ${{ env.AWS_AMPLIFY_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: signal-room-amplify-${{ github.run_id }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+          mask-aws-account-id: true
+          unset-current-credentials: true
 
       - name: Start Amplify release
         shell: bash
-        env:
-          AMPLIFY_APP_ID: ${{ vars.AMPLIFY_APP_ID }}
-          AMPLIFY_BRANCH: ${{ vars.AMPLIFY_BRANCH }}
         run: |
-          job_id=$(aws amplify start-job \
+          set -euo pipefail
+          read -r job_id commit_id < <(aws amplify start-job \
             --app-id "$AMPLIFY_APP_ID" \
             --branch-name "$AMPLIFY_BRANCH" \
             --job-type RELEASE \
-            --query 'jobSummary.jobId' \
+            --query '[jobSummary.jobId, jobSummary.commitId]' \
             --output text)
+          if [[ "$commit_id" != "$TESTED_REVISION" ]]; then
+            aws amplify stop-job \
+              --app-id "$AMPLIFY_APP_ID" \
+              --branch-name "$AMPLIFY_BRANCH" \
+              --job-id "$job_id" > /dev/null
+            echo "::error::Amplify selected $commit_id instead of tested revision $TESTED_REVISION; the job was stopped."
+            exit 1
+          fi
           echo "AMPLIFY_JOB_ID=$job_id" >> "$GITHUB_ENV"
 
       - name: Wait for deployment
         shell: bash
-        env:
-          AMPLIFY_APP_ID: ${{ vars.AMPLIFY_APP_ID }}
-          AMPLIFY_BRANCH: ${{ vars.AMPLIFY_BRANCH }}
         run: |
+          set -euo pipefail
           for attempt in {1..60}; do
             status=$(aws amplify get-job \
               --app-id "$AMPLIFY_APP_ID" \

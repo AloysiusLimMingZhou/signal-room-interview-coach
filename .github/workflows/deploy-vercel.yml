@@ -1,0 +1,139 @@
+name: Deploy Web to Vercel
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: vercel-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      CI: "true"
+      TESTED_REVISION: ${{ github.sha }}
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+    steps:
+      - name: Validate trusted production revision
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERCEL_TOKEN_PRESENT: ${{ secrets.VERCEL_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Production web deployments must run from main."
+            exit 1
+          fi
+          if [[ -z "$VERCEL_ORG_ID" || -z "$VERCEL_PROJECT_ID" || "$VERCEL_TOKEN_PRESENT" != "true" ]]; then
+            echo "::error::Configure VERCEL_ORG_ID, VERCEL_PROJECT_ID, and VERCEL_TOKEN in the production environment."
+            exit 1
+          fi
+          successful_runs=$(gh api \
+            "/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$TESTED_REVISION&event=push&status=success&per_page=1" \
+            --jq '.total_count')
+          if [[ "$successful_runs" -lt 1 ]]; then
+            echo "::error::Production requires successful push CI for $TESTED_REVISION."
+            exit 1
+          fi
+
+      - name: Check out the tested revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.TESTED_REVISION }}
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.19.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies from lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Pull production configuration
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: pnpm exec vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Build immutable production artifact
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: pnpm exec vercel build --prod --token="$VERCEL_TOKEN"
+
+      - name: Deploy candidate without production promotion
+        id: candidate
+        shell: bash
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          deployment_url=$(pnpm exec vercel deploy --prebuilt --yes --token="$VERCEL_TOKEN")
+          if [[ ! "$deployment_url" =~ ^https://[A-Za-z0-9.-]+[.]vercel[.]app/?$ ]]; then
+            echo "::error::Vercel did not return a valid candidate deployment URL."
+            exit 1
+          fi
+          echo "url=$deployment_url" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-test candidate and P1 configuration
+        shell: bash
+        env:
+          DEPLOYMENT_URL: ${{ steps.candidate.outputs.url }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error \
+            --retry 5 \
+            --retry-all-errors \
+            --retry-delay 5 \
+            --connect-timeout 5 \
+            --max-time 20 \
+            -- "$DEPLOYMENT_URL/api/health" > /dev/null
+          curl --fail --silent --show-error \
+            --retry 5 \
+            --retry-all-errors \
+            --retry-delay 5 \
+            --connect-timeout 5 \
+            --max-time 20 \
+            -- "$DEPLOYMENT_URL/api/auth/session" \
+            | jq --exit-status '.p1Enabled == true and .authenticated == false' > /dev/null
+          login_status=$(curl --silent --show-error \
+            --connect-timeout 5 \
+            --max-time 20 \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            -- "$DEPLOYMENT_URL/api/auth/login")
+          if [[ "$login_status" != "307" ]]; then
+            echo "::error::Expected configured Cognito login to redirect with 307, received $login_status."
+            exit 1
+          fi
+
+      - name: Promote verified candidate to production
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          DEPLOYMENT_URL: ${{ steps.candidate.outputs.url }}
+        run: pnpm exec vercel promote "$DEPLOYMENT_URL" --yes --token="$VERCEL_TOKEN"
+
+      - name: Publish deployment summary
+        shell: bash
+        env:
+          DEPLOYMENT_URL: ${{ steps.candidate.outputs.url }}
+        run: |
+          {
+            printf '%s\n' '### Vercel web deployment'
+            printf '%s\n' "- Revision: $TESTED_REVISION"
+            printf '%s\n' "- Verified candidate: $DEPLOYMENT_URL"
+          } >> "$GITHUB_STEP_SUMMARY"

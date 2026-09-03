@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMachine } from "@xstate/react";
 import {
   Activity,
@@ -14,8 +14,6 @@ import {
   Mic,
   MicOff,
   Network,
-  Pause,
-  Play,
   Send,
   ShieldCheck,
   Sparkles,
@@ -36,6 +34,8 @@ import {
   type TranscriptItem,
 } from "@/lib/interview";
 import { interviewMachine } from "@/lib/interview-machine";
+import type { InterviewEvent } from "@/lib/p1/contracts";
+import { syncInterviewEventBatch } from "@/lib/p1/evidence-sync";
 import { MockRealtimeAdapter } from "@/lib/realtime/mock-adapter";
 import type {
   InterviewDifficulty,
@@ -70,6 +70,16 @@ function formatTime(seconds: number) {
   return `${minutes}:${remainder}`;
 }
 
+type InterviewEventDraft<T extends InterviewEvent = InterviewEvent> = T extends InterviewEvent
+  ? Omit<T, "id" | "sessionId" | "sequence" | "occurredAt">
+  : never;
+
+async function sha256Hex(value: unknown) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export function InterviewApp() {
   const [machine, send] = useMachine(interviewMachine);
   const [track, setTrack] = useState<InterviewTrack>("system-design");
@@ -81,11 +91,19 @@ export function InterviewApp() {
   const [nodes, setNodes] = useState<DesignNode[]>([]);
   const [activeTab, setActiveTab] = useState<"code" | "canvas">("code");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [isPaused, setPaused] = useState(false);
   const [scores, setScores] = useState<EvidenceScore[]>([]);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [microphoneActive, setMicrophoneActive] = useState(false);
+  const [authStatus, setAuthStatus] = useState<{ p1Enabled: boolean; authenticated: boolean } | null>(null);
+  const [requiresSignIn, setRequiresSignIn] = useState(false);
   const adapterRef = useRef<RealtimeAdapter | null>(null);
+  const sessionStartedAtRef = useRef<number | null>(null);
+  const elapsedSecondsRef = useRef(0);
+  const eventSequenceRef = useRef(0);
+  const persistenceQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const persistenceModeRef = useRef<RealtimeSession["persistence"]>(undefined);
+  const finishingRef = useRef(false);
+  const sessionRequestIdRef = useRef(crypto.randomUUID());
 
   const isActive = machine.matches("active");
   const isCompleted = machine.matches("completed");
@@ -99,24 +117,87 @@ export function InterviewApp() {
   );
 
   useEffect(() => {
-    if (!isActive || isPaused) return;
-    const timer = window.setInterval(() => setElapsedSeconds((value) => value + 1), 1_000);
+    if (!isActive || sessionStartedAtRef.current === null) return;
+    const updateElapsed = () => {
+      const startedAt = sessionStartedAtRef.current;
+      if (startedAt === null) return;
+      const next = Math.max(0, Math.floor((Date.now() - startedAt) / 1_000));
+      elapsedSecondsRef.current = next;
+      setElapsedSeconds(next);
+    };
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 250);
     return () => window.clearInterval(timer);
-  }, [isActive, isPaused]);
+  }, [isActive]);
 
   useEffect(() => () => { void adapterRef.current?.close(); }, []);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("/api/auth/session", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const payload = await response.json() as unknown;
+        if (
+          payload &&
+          typeof payload === "object" &&
+          typeof (payload as Record<string, unknown>).p1Enabled === "boolean" &&
+          typeof (payload as Record<string, unknown>).authenticated === "boolean"
+        ) {
+          setAuthStatus(payload as { p1Enabled: boolean; authenticated: boolean });
+        }
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
+
+  const queueEvidenceEvents = useCallback((
+    drafts: InterviewEventDraft[],
+    sessionId = session?.sessionId,
+  ) => {
+    if (!sessionId || drafts.length === 0) return;
+    const baseSequence = eventSequenceRef.current;
+    const events = drafts.map((draft, index) => ({
+      ...draft,
+      id: crypto.randomUUID(),
+      sessionId,
+      sequence: baseSequence + index + 1,
+      occurredAt: new Date().toISOString(),
+    })) as InterviewEvent[];
+    eventSequenceRef.current += events.length;
+
+    persistenceQueueRef.current = persistenceQueueRef.current
+      .then(async () => {
+        await syncInterviewEventBatch({ sessionId, baseSequence, events });
+      })
+      .catch(() => {
+        if (persistenceModeRef.current === "aws") {
+          setConnectionError("Your interview is still active, but some evidence has not synced yet.");
+        }
+      });
+  }, [session?.sessionId]);
+
   async function startInterview() {
     setConnectionError(null);
+    persistenceModeRef.current = undefined;
     send({ type: "START", track, difficulty });
     try {
       const response = await fetch("/api/realtime/session", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ track, difficulty, providerPreference: "gemini" }),
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": sessionRequestIdRef.current,
+        },
+        body: JSON.stringify({ track, difficulty, providerPreference: "gemini", durationMinutes: 10 }),
       });
+      if (response.status === 401) {
+        setRequiresSignIn(true);
+        throw new Error("Sign in before starting the protected P1 interview.");
+      }
+      if (response.status === 429) throw new Error("This month's 10-interview pilot limit has been reached.");
       if (!response.ok) throw new Error("Could not create the interview room.");
       const provisioned = (await response.json()) as RealtimeSession;
+      persistenceModeRef.current = provisioned.persistence;
       const adapter: RealtimeAdapter = provisioned.mode === "gemini"
         ? new (await import("@/lib/realtime/gemini-adapter")).GeminiRealtimeAdapter()
         : new MockRealtimeAdapter();
@@ -129,6 +210,33 @@ export function InterviewApp() {
           if (event.type === "output-transcript") pendingInterviewer += event.text;
           if (event.type === "error") setConnectionError(event.message);
           if (event.type === "turn-complete") {
+            const completedEvents: InterviewEventDraft[] = [];
+            const currentElapsedSeconds = elapsedSecondsRef.current;
+            if (pendingCandidate.trim()) {
+              completedEvents.push({
+                type: "transcript.final",
+                payload: {
+                  speaker: "candidate",
+                  text: pendingCandidate.trim(),
+                  evidenceId: `evidence:voice-${crypto.randomUUID()}`,
+                  startMs: Math.max(0, currentElapsedSeconds * 1_000 - 1_000),
+                  endMs: currentElapsedSeconds * 1_000,
+                },
+              });
+            }
+            if (pendingInterviewer.trim()) {
+              completedEvents.push({
+                type: "transcript.final",
+                payload: {
+                  speaker: "interviewer",
+                  text: pendingInterviewer.trim(),
+                  evidenceId: `evidence:voice-${crypto.randomUUID()}`,
+                  startMs: Math.max(0, currentElapsedSeconds * 1_000 - 1_000),
+                  endMs: currentElapsedSeconds * 1_000,
+                },
+              });
+            }
+            queueEvidenceEvents(completedEvents, provisioned.sessionId);
             setTranscript((items) => {
               const next = [...items];
               if (pendingCandidate.trim()) next.push(makeTranscript("candidate", pendingCandidate.trim(), next.length + 1));
@@ -138,11 +246,36 @@ export function InterviewApp() {
               return next;
             });
           }
+          if (event.type === "usage") {
+            queueEvidenceEvents([{
+              type: "provider.usage",
+              payload: {
+                provider: "gemini",
+                model: provisioned.model,
+                inputTokens: event.inputTokens ?? 0,
+                outputTokens: event.outputTokens ?? 0,
+                estimatedCostUsd: 0,
+              },
+            }], provisioned.sessionId);
+          }
         });
       }
       await adapter.connect(provisioned);
       setSession(provisioned);
+      eventSequenceRef.current = 0;
+      finishingRef.current = false;
+      elapsedSecondsRef.current = 0;
+      sessionStartedAtRef.current = Date.now();
+      setElapsedSeconds(0);
       setTranscript([makeTranscript("interviewer", initialPrompt(track, difficulty), 1)]);
+      queueEvidenceEvents([{
+        type: "question.started",
+        payload: {
+          questionId: crypto.randomUUID(),
+          turn: 1,
+          prompt: initialPrompt(track, difficulty),
+        },
+      }], provisioned.sessionId);
       send({ type: "CONNECTED" });
       if (provisioned.mode === "gemini") {
         adapter.sendText("Begin the interview now. Ask the opening question and wait for my response.");
@@ -164,6 +297,26 @@ export function InterviewApp() {
       transcript.length + 2,
     );
     setTranscript((items) => [...items, candidateItem, nextQuestion]);
+    queueEvidenceEvents([
+      {
+        type: "transcript.final",
+        payload: {
+          speaker: "candidate",
+          text,
+          evidenceId: candidateItem.evidenceId,
+          startMs: Math.max(0, elapsedSeconds * 1_000 - 1_000),
+          endMs: elapsedSeconds * 1_000,
+        },
+      },
+      {
+        type: "question.started",
+        payload: {
+          questionId: crypto.randomUUID(),
+          turn: machine.context.answerCount + 2,
+          prompt: nextQuestion.text,
+        },
+      },
+    ]);
     adapterRef.current?.sendText(text);
     setAnswer("");
     send({ type: "ANSWER_SUBMITTED" });
@@ -173,15 +326,72 @@ export function InterviewApp() {
   function injectScenario() {
     const scenario = scenarioByTrack[track];
     setTranscript((items) => [...items, makeTranscript("system", scenario, items.length + 1)]);
+    queueEvidenceEvents([{
+      type: "scenario.injected",
+      payload: {
+        scenarioId: `scenario-${track}`,
+        kind: track === "ml-design" ? "model-drift" : track === "system-design" ? "privacy-constraint" : "component-failure",
+        title: "Dynamic interview constraint",
+        prompt: scenario,
+        injectedAtTurn: machine.context.answerCount + 1,
+      },
+    }]);
   }
 
-  function finishInterview() {
+  const finishInterview = useCallback(async (
+    reason: "user-ended" | "time-limit" = "user-ended",
+  ) => {
+    if (finishingRef.current) return;
+    finishingRef.current = true;
     send({ type: "FINISH" });
     const report = buildEvidenceScorecard(transcript, code, nodes);
     setScores(report);
     void adapterRef.current?.close();
+    if (session) {
+      const evidenceSnapshotHash = await sha256Hex({ transcript, code, nodes });
+      const completionSequence = eventSequenceRef.current + 3;
+      queueEvidenceEvents([
+        {
+          type: "code.snapshot",
+          payload: {
+            language: "typescript",
+            content: code,
+            revision: 1,
+            evidenceId: "evidence:code-final",
+          },
+        },
+        {
+          type: "canvas.snapshot",
+          payload: {
+            revision: 1,
+            nodes: nodes.map((node, index) => ({
+              ...node,
+              x: (index % 4) * 220,
+              y: Math.floor(index / 4) * 140,
+            })),
+            edges: [],
+            evidenceId: "evidence:canvas-final",
+          },
+        },
+        {
+          type: "interview.completed",
+          payload: {
+            reason,
+            durationMs: Math.min(elapsedSeconds * 1_000, 10 * 60 * 1_000),
+            finalSequence: completionSequence,
+            evidenceSnapshotHash,
+            gradingRequested: true,
+          },
+        },
+      ]);
+    }
     window.setTimeout(() => send({ type: "GRADED" }), 120);
-  }
+  }, [code, elapsedSeconds, nodes, queueEvidenceEvents, send, session, transcript]);
+
+  useEffect(() => {
+    const limitSeconds = (session?.maxDurationMinutes ?? 10) * 60;
+    if (isActive && elapsedSeconds >= limitSeconds) void finishInterview("time-limit");
+  }, [elapsedSeconds, finishInterview, isActive, session?.maxDurationMinutes]);
 
   async function toggleMicrophone() {
     if (session?.mode !== "gemini" || !adapterRef.current) return;
@@ -206,7 +416,7 @@ export function InterviewApp() {
       <main className="landing-shell">
         <nav className="top-nav">
           <div className="brand"><span className="brand-mark"><AudioLines size={19} /></span>Signal Room</div>
-          <div className="nav-meta"><span className="status-dot" />Gemini-first prototype</div>
+          <div className="nav-meta"><span className="status-dot" />{authStatus?.p1Enabled ? "Protected AWS pilot" : "Gemini-first prototype"}</div>
         </nav>
         <section className="landing-grid">
           <div className="hero-copy">
@@ -216,13 +426,13 @@ export function InterviewApp() {
             <div className="proof-row">
               <div><strong>&lt;1.5s</strong><span>target response</span></div>
               <div><strong>3 modes</strong><span>one workbench</span></div>
-              <div><strong>$1.50–1.80</strong><span>planned session</span></div>
+              <div><strong>10 × 10m</strong><span>monthly pilot cap</span></div>
             </div>
           </div>
           <div className="setup-card">
             <div className="setup-heading">
               <span>Configure your room</span>
-              <div className="mock-pill" data-testid="mode-badge"><ShieldCheck size={13} /> Mock-ready</div>
+              <div className="mock-pill" data-testid="mode-badge"><ShieldCheck size={13} /> {authStatus?.p1Enabled ? (authStatus.authenticated ? "P1 signed in" : "Sign-in required") : "Mock-ready"}</div>
             </div>
             <label>Interview track</label>
             <div className="choice-grid">
@@ -244,12 +454,16 @@ export function InterviewApp() {
               <option value="senior">Senior · probing</option>
               <option value="staff">Staff · ambiguous</option>
             </select>
-            <div className="privacy-note"><ShieldCheck size={17} /><p><strong>Private by default.</strong> P0 keeps interview content in this browser. Audio is never recorded.</p></div>
+            <div className="privacy-note"><ShieldCheck size={17} /><p><strong>Private by default.</strong> {authStatus?.p1Enabled ? "P1 syncs validated transcript and artifact events to AWS." : "Mock mode keeps interview content in this browser."} Audio is never recorded.</p></div>
             {connectionError && <p className="error-message" role="alert">{connectionError}</p>}
-            <button className="primary-button start-button" type="button" onClick={startInterview} disabled={connecting}>
-              {connecting ? "Opening room…" : "Enter interview room"}<ArrowGlyph />
-            </button>
-            <small className="setup-footnote">Runs without an API key. Add Gemini later for live voice.</small>
+            {(requiresSignIn || (authStatus?.p1Enabled && !authStatus.authenticated)) ? (
+              <a className="primary-button start-button" href="/api/auth/login">Sign in with Cognito<ArrowGlyph /></a>
+            ) : (
+              <button className="primary-button start-button" type="button" onClick={startInterview} disabled={connecting}>
+                {connecting ? "Opening room…" : "Enter interview room"}<ArrowGlyph />
+              </button>
+            )}
+            <small className="setup-footnote">Pilot sessions are capped at 10 minutes; local mock mode needs no API key.</small>
           </div>
         </section>
         <div className="ambient ambient-one" /><div className="ambient ambient-two" />
@@ -282,9 +496,8 @@ export function InterviewApp() {
         </div>
         <div className="room-controls">
           <span className={`live-badge ${session?.mode === "gemini" ? "provider-live" : ""}`}><span />{session?.mode === "gemini" ? "Gemini Live" : "Mock session"}</span>
-          <button type="button" className="icon-button" aria-label={isPaused ? "Resume timer" : "Pause timer"} onClick={() => setPaused((value) => !value)}>{isPaused ? <Play /> : <Pause />}</button>
           <time><Clock3 size={15} />{formatTime(elapsedSeconds)}</time>
-          <button type="button" className="end-button" onClick={finishInterview}><LogOut size={15} /> End & review</button>
+          <button type="button" className="end-button" onClick={() => void finishInterview()}><LogOut size={15} /> End & review</button>
         </div>
       </header>
       <div className="room-layout">
@@ -323,7 +536,7 @@ export function InterviewApp() {
           <div className="workbench-tabs" role="tablist" aria-label="Interview artifacts">
             <button type="button" role="tab" aria-selected={activeTab === "code"} onClick={() => setActiveTab("code")}><Braces size={15} /> Code</button>
             <button type="button" role="tab" aria-selected={activeTab === "canvas"} onClick={() => setActiveTab("canvas")}><Network size={15} /> Architecture</button>
-            <span className="autosave">Local session</span>
+            <span className="autosave">{session?.persistence === "aws" ? "AWS synced" : "Local session"}</span>
           </div>
           <div className="workbench-body">
             {activeTab === "code" ? <CodeWorkbench value={code} onChange={setCode} /> : <ArchitectureCanvas nodes={nodes} onChange={setNodes} />}

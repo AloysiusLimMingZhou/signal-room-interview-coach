@@ -6,10 +6,18 @@ export type InterviewDifficulty = "mid" | "senior" | "staff";
 export interface RealtimeSession {
   sessionId: string;
   mode: RealtimeMode;
+  provider?: "gemini";
   model: string;
   expiresAt: string;
   token?: string;
   wsUrl?: string;
+  maxDurationMinutes?: number;
+  persistence?: "local" | "aws";
+  resume?: {
+    enabled: boolean;
+    contextCompressionTriggerTokens: number;
+    slidingWindowTokens: number;
+  };
 }
 
 export type RealtimeEvent =
@@ -35,4 +43,5 @@ export interface SessionRequest {
   track: InterviewTrack;
   difficulty: InterviewDifficulty;
   providerPreference: "gemini";
+  durationMinutes?: number;
 }

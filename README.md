@@ -2,181 +2,204 @@
 
 [![CI](https://github.com/AloysiusLimMingZhou/signal-room-interview-coach/actions/workflows/ci.yml/badge.svg)](https://github.com/AloysiusLimMingZhou/signal-room-interview-coach/actions/workflows/ci.yml)
 
-Signal Room is a Gemini-first web prototype for practicing system-design, ML-design, and algorithm interviews. It treats the transcript, code, and architecture diagram as first-class evidence, then creates a coaching scorecard that links back to those artifacts.
+Signal Room is a Gemini-first web app for practicing system-design, ML-design, and algorithm interviews. It treats transcript, code, and architecture artifacts as evidence, then creates a scorecard tied to that evidence.
 
-The app is fully usable in deterministic mock mode. No API key, model spend, microphone access, database, or AWS account is required to develop and test it.
+The deterministic P0 prototype runs locally with no key or cloud account. The P1 indie-pilot code adds Cognito authentication, a Next.js BFF, a hard 10-interview × 10-minute monthly limit, DynamoDB evidence, asynchronous Gemini grading, CloudWatch operations, and guarded GitHub deployments. P1 is implemented and locally verified but has not been deployed to AWS or Vercel.
 
 ## Source of truth
 
-[`architecture.md`](./architecture.md) is authoritative for product scope, provider boundaries, contracts, privacy rules, testing, and delivery. Architecture-impacting changes must update it in the same pull request.
+[architecture.md](./architecture.md) is authoritative for product scope, provider boundaries, data contracts, privacy, costs, testing, and deployment. Architecture changes must update it and the related tests in the same pull request.
 
-## P0 experience
+## What works
 
-- Choose system design, ML system design, or algorithms with a difficulty calibration.
-- Run a text-driven mock interview using the same provider-neutral boundary as Gemini Live.
-- Work in a lazy-loaded Monaco editor or structured architecture canvas.
-- Inject a realistic mid-interview constraint.
-- See a live Gemini cost estimate.
-- Finish with an evidence-linked scorecard.
-- Provision constrained Gemini Live ephemeral credentials without exposing the standard key.
+- System-design, ML-design, and algorithm tracks at mid, senior, and staff difficulty.
+- XState interview lifecycle with deterministic mock and Gemini adapters.
+- Monaco code workbench and structured design canvas.
+- Dynamic scenario injection and an evidence-linked local scorecard.
+- Direct browser-to-Gemini audio: 16 kHz PCM input and 24 kHz output.
+- OAuth code + PKCE through Cognito, with the access token kept in a scoped HttpOnly cookie.
+- Strict, retry-safe evidence batches for transcript, code, canvas, scenarios, usage, and completion.
+- Atomic global/per-user monthly quotas and idempotent session creation.
+- SQS independent grader with an evidence schema and DynamoDB grading lease; its stored Gemini report is not yet read by the browser.
+- CloudWatch JSON logs, EMF metrics, dashboard, baseline alarms, X-Ray, and production Lambda canaries.
+- Nonce CSP, security headers, exact-origin checks, bounded JSON, safe errors, and log redaction.
 
-## P0 architecture
+## Architecture
 
-```mermaid
+~~~mermaid
 flowchart LR
-  subgraph Browser
-    UI[Next.js interview room]
-    State[XState lifecycle]
-    Audio[AudioWorklet]
-    Artifacts[Monaco + design canvas]
-    Adapter[Provider-neutral adapter]
-  end
+  Browser[Candidate browser] --> BFF[Next.js BFF on Vercel]
+  BFF <-->|OAuth code + PKCE| Cognito[AWS Cognito]
+  BFF -->|HttpOnly access token| API[API Gateway]
+  API --> Session[Session Lambda]
+  API --> Events[Event Lambda]
+  Session --> DDB[(DynamoDB)]
+  Session --> Secret[Secrets Manager]
+  Session --> Token[Gemini token service]
+  Token --> Browser
+  Browser <-->|direct audio WebSocket| Live[Gemini Live]
+  Events --> DDB
+  Events --> Queue[SQS + DLQ]
+  Queue --> Grader[Grader Lambda]
+  Grader --> Grade[Gemini text grader]
+  Grader --> DDB
+  API --> CW[CloudWatch + X-Ray]
+~~~
 
-  subgraph App[Next.js application plane]
-    Session[POST /api/realtime/session]
-    Health[GET /api/health]
-  end
+Audio does not traverse API Gateway or Lambda.
 
-  subgraph Gemini[Google Gemini]
-    Tokens[Ephemeral token service]
-    Live[Gemini Live WebSocket]
-  end
+## Run P0 locally
 
-  UI --> State
-  Artifacts --> State
-  Audio --> Adapter
-  UI --> Session
-  Session -->|server-only API key| Tokens
-  Tokens -->|single-use token| UI
-  Adapter <-->|16 kHz input / 24 kHz output| Live
-```
+Requirements: Node.js 22 and pnpm 11.19.
 
-Without `GEMINI_API_KEY`, the session endpoint returns a local mock descriptor and the browser never contacts Google.
-
-## Run locally
-
-Requirements: Node.js 22+ and pnpm 11.19+.
-
-```bash
+~~~bash
 pnpm install
 pnpm dev
-```
+~~~
 
-Open `http://localhost:3000`. With no `.env.local`, the UI automatically uses mock mode.
+Open http://localhost:3000. With no .env.local, the app uses mock mode and never requests microphone access or calls Gemini.
 
-For a production-style local check:
+Optional local Gemini mode:
 
-```bash
-pnpm build
-pnpm start
-```
-
-Open `http://localhost:3000/api/health` and confirm the response contains `"status":"ok"` before entering the interview room.
-
-## Enable Gemini Live
-
-Copy `.env.example` to `.env.local` and add the key when it is available:
-
-```dotenv
+~~~dotenv
 GEMINI_API_KEY=your_server_only_key
 GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview
-```
+~~~
 
-`GEMINI_API_KEY` is read only by `POST /api/realtime/session`. The browser receives a short-lived, single-use token constrained to the selected Live model and audio modality. Never rename it to a `NEXT_PUBLIC_*` variable.
+Never rename the key to a NEXT_PUBLIC_ variable. Do not expose this unauthenticated local-key route on a public deployment.
 
-The browser adapter includes 16 kHz PCM microphone capture, 24 kHz PCM playback, transcription handling, and interruption. Robust reconnect UX remains post-P0 work; the architecture already reserves session resumption and context compression.
+## Test everything
 
-> **Live-preview safety:** do not place `GEMINI_API_KEY` in a public P0 deployment. The token-provisioning route has no production authentication or per-user quota yet. Run the public demo in mock mode, or enable Gemini only behind an access-controlled preview.
-
-## Test and build
-
-```bash
+~~~bash
 pnpm lint
 pnpm typecheck
+pnpm audit:deps
 pnpm audit:prod
 pnpm test:ci
+pnpm infra:test
+pnpm infra:synth --context stage=test
 pnpm build
+pnpm security:bundle
 pnpm exec playwright install chromium
 pnpm test:e2e
-```
+~~~
 
-Jest verifies cost math, the interview state machine, evidence generation, and the no-key/API-key-leak session boundary. Playwright completes the candidate journey in mock mode and never calls Gemini.
+Jest and CDK assertions use no cloud credentials. The current suite contains 58 application tests, 23 infrastructure tests, and one Playwright candidate journey. Playwright stubs only the session-provisioning response, so it exercises the production UI without a model call or weakening the production fail-closed policy.
 
-## CI/CD
+## Deploy the P1 application plane
 
-`.github/workflows/ci.yml` runs lint, type checking, Jest coverage, a production build, and Chromium Playwright tests for pull requests and `main`.
+### 1. Bootstrap AWS once
 
-`.github/workflows/deploy-amplify.yml` starts an AWS Amplify release only after a successful `main` CI run or an approved manual dispatch. Configure:
+Authenticate an AWS CLI profile for the target account, then bootstrap Singapore:
 
-- Variable `AWS_REGION` (`ap-southeast-1` by default).
-- Variable `AMPLIFY_APP_ID`.
-- Variable `AMPLIFY_BRANCH` (normally `main`).
-- Production environment secret `AWS_DEPLOY_ROLE_ARN` for a least-privilege GitHub OIDC role.
-- `GEMINI_API_KEY` and `GEMINI_LIVE_MODEL` in Amplify server-side environment configuration when enabling Live mode.
+~~~bash
+pnpm exec cdk bootstrap aws://ACCOUNT_ID/ap-southeast-1
+~~~
 
-No long-lived AWS access key is stored in GitHub.
+The stack is intentionally pinned to ap-southeast-1.
 
-## Launch the P0 prototype
+### 2. Choose the final web origin
 
-### Option A — fastest public demo
+Cognito callback URLs and API CORS use one exact origin. For production, choose the Vercel custom domain before deploying AWS, for example https://interviews.example.com.
 
-1. Open AWS Amplify Hosting and choose **New app → GitHub**.
-2. Select `AloysiusLimMingZhou/signal-room-interview-coach` and branch `main`.
-3. Let Amplify use the committed `amplify.yml` build specification.
-4. Do **not** configure `GEMINI_API_KEY`; this keeps the public demo in deterministic mock mode with no model spend.
-5. Deploy, open the generated Amplify URL, and verify `/api/health` before running one complete interview.
+### 3. Test, synthesize, and deploy
 
-### Option B — access-controlled Gemini preview
+PowerShell example for a local development origin:
 
-1. Protect the preview with authenticated access before enabling paid model usage.
-2. Add `GEMINI_API_KEY` and optionally `GEMINI_LIVE_MODEL` as server-side Amplify environment variables.
-3. Confirm that neither value uses a `NEXT_PUBLIC_` prefix.
-4. Add a billing budget and API usage alert in the Google project.
-5. Test microphone permission, interruption, a ten-minute reconnect boundary, and quota exhaustion with a non-production key.
+~~~powershell
+$env:DEPLOY_STAGE = "dev"
+$env:P1_ALLOWED_ORIGIN = "http://localhost:3000"
+pnpm infra:test
+pnpm infra:synth --context stage=dev
+pnpm infra:deploy --context stage=dev
+~~~
 
-### Enable the GitHub deployment workflow
+The stack outputs ApiUrl, UserPoolId, UserPoolClientId, CognitoDomain, GeminiSecretArn, ArtifactsBucketName, and DashboardName.
 
-After the Amplify app exists, configure the repository:
+By default CDK creates a Secrets Manager secret containing a random placeholder. Replace that value in the AWS console with the Gemini key before starting a real interview. To reuse an existing secret, set GEMINI_SECRET_ARN before synthesis/deployment. Never paste a production key into source, CloudFormation parameters, GitHub variables, or shell history.
 
-- Variable `AWS_REGION=ap-southeast-1`.
-- Variable `AMPLIFY_APP_ID=<your Amplify app id>`.
-- Variable `AMPLIFY_BRANCH=main`.
-- Production environment secret `AWS_DEPLOY_ROLE_ARN=<least-privilege OIDC role ARN>`.
+### 4. Configure the web BFF
 
-The deployment workflow then waits for CI on `main`, authenticates to AWS using OIDC, starts the Amplify release, and waits for its result.
+Map stack outputs into server-only web environment variables:
 
-## Next-step features
+~~~dotenv
+P1_API_URL=https://the-api-id.execute-api.ap-southeast-1.amazonaws.com
+APP_ORIGIN=https://your-final-web-origin.example
+COGNITO_CLIENT_ID=the-UserPoolClientId-output
+COGNITO_DOMAIN=https://the-CognitoDomain-output
+~~~
 
-Recommended order after the mock P0 is publicly reachable:
+Do not configure GEMINI_API_KEY on the P1 Vercel project. When P1_API_URL is unset, development and test deliberately fall back to the local P0 path. Production fails closed with a 503 response instead of exposing an unauthenticated mock or Gemini route.
 
-1. **Protected Gemini pilot:** Cognito sign-in, token-provisioning authorization, per-user quotas, rate limiting, and spend cutoffs.
-2. **Reliable 45-minute sessions:** persist resumption handles, react to `GoAway`, recover microphone/device changes, and retain a compact context summary.
-3. **Artifact-aware interviewing:** emit structured code patches and canvas node/edge events to Gemini so follow-up questions reference actual work.
-4. **Independent evidence grading:** asynchronously grade the frozen transcript, code, and canvas snapshot with a separate Gemini text-model call and versioned rubric.
-5. **Rewind and retry:** branch from a question, replay the scenario, and compare evidence between both attempts.
-6. **Skill history:** Cognito identity, DynamoDB event/report storage, longitudinal competency graph, and recommended next interview.
-7. **Production observability:** OpenTelemetry traces, Sentry, provider usage ingestion, cost per completed interview, reconnect SLOs, and daily-spend alarms.
+For a local BFF against a deployed development stack, use APP_ORIGIN=http://localhost:3000 and ensure the stack was deployed with that same allowed origin.
 
-Target P1 shape:
+## GitHub CI/CD
 
-```mermaid
-flowchart LR
-  Browser[Authenticated browser] --> API[API Gateway / Lambda]
-  API --> Cognito[Cognito]
-  API --> Token[Constrained Gemini token]
-  Browser <--> Live[Gemini Live]
-  Browser --> Events[DynamoDB event log]
-  Browser --> Artifacts[S3 opt-in artifacts]
-  Events --> Queue[SQS grading queue]
-  Artifacts --> Queue
-  Queue --> Grader[Independent Gemini grader]
-  Grader --> Report[Evidence report + skill graph]
-  Usage[Usage telemetry] --> Alarms[Cost and SLO alarms]
-  API --> Usage
-```
+CI has separate app-quality, infrastructure, and browser jobs. It performs a frozen lockfile install, fails on moderate-or-higher vulnerabilities across production and build dependencies, and enforces a one-day package release-age gate with exact reviewed exceptions recorded for the pinned Vercel CLI dependency set. CodeQL, dependency review, and Dependabot run alongside it. Third-party actions are pinned to immutable commit SHAs.
 
-## Current Gemini pricing assumption
+### AWS environments
 
-Official paid-tier prices checked on 2026-09-01 for `gemini-3.1-flash-live-preview` are approximately $0.005/minute of audio input and $0.018/minute of audio output. Thirty candidate minutes plus ten interviewer minutes is a $0.33 duration-only lower bound. Re-billed conversational context makes the working 45-minute planning range $1.50–$1.80 until production usage telemetry replaces the estimate.
+Create GitHub environments named development, staging, and production. Configure:
 
-Pricing and protocol references are maintained in [`architecture.md`](./architecture.md). Verify them again before launch because the model and Live API are preview services.
+- P1_AWS_DEPLOY_ENABLED=true as a repository variable only after the development environment is fully configured; leaving it unset keeps automatic AWS deploys dormant.
+- AWS_DEPLOY_ROLE_ARN: environment variable for the least-privilege GitHub OIDC role.
+- AWS_REGION=ap-southeast-1.
+- P1_ALLOWED_ORIGIN: exact web origin for that environment.
+- GEMINI_SECRET_ARN: optional existing secret ARN.
+- GLOBAL_MONTHLY_INTERVIEW_LIMIT=10.
+- USER_MONTHLY_INTERVIEW_LIMIT=10 or lower.
+- SESSION_DURATION_MINUTES=10 or lower.
+- P1_HEALTHCHECK_URL and P1_SMOKE_PATH: optional smoke-test overrides.
+
+deploy-p1-aws.yml automatically deploys development only when the repository variable P1_AWS_DEPLOY_ENABLED is exactly true and CI succeeds on a trusted main push. Manual runs remain available while the flag is unset, but fail closed until their selected environment is configured. Every manual stage requires successful CI for the selected revision; production requires push-triggered CI on that exact main revision. Staging and production are manual and environment-gated. No long-lived AWS access key is stored in GitHub.
+
+After the first run of the new workflows, protect main against force-push/deletion and require the CI quality, infrastructure, browser, CodeQL, and dependency-review checks appropriate to the event. Add at least one required reviewer to the production environment and restrict it to main before configuring deployment credentials.
+
+### Vercel production
+
+Configure the production GitHub environment:
+
+- VERCEL_ORG_ID and VERCEL_PROJECT_ID as variables.
+- VERCEL_TOKEN as a narrowly scoped secret.
+
+Configure P1_API_URL, APP_ORIGIN, COGNITO_CLIENT_ID, and COGNITO_DOMAIN in the Vercel production project. Run deploy-vercel.yml manually from main only after the matching AWS production deployment is healthy. The workflow verifies exact-revision CI, keeps the token scoped to CLI steps, deploys a candidate, checks health/P1 auth configuration, and promotes only the verified artifact.
+
+Disable Vercel Git auto-deployments if this workflow is authoritative. AWS Amplify remains a manual compatibility-gated fallback because its documented managed support currently stops at Next.js 15 while this project uses Next.js 16.
+
+## Current cost ceiling
+
+For ten 10-minute interviews per month:
+
+| Area | Monthly planning range |
+|---|---:|
+| Gemini Live, including context-rebilling headroom | $3–$6 |
+| Independent Gemini grading | < $0.25 |
+| AWS serverless application plane | about $2.50–$7 |
+| Eligible Vercel Hobby hosting | $0 |
+| **Expected total** | **about $5.75–$13.25** |
+
+The audio-only Gemini lower bound is about $0.73 for all ten interviews. The API key itself has no fee. CloudWatch alarms/custom metrics and Secrets Manager dominate the tiny AWS workload. Avoid WAF, Managed Grafana, Managed Prometheus, NAT Gateway, Aurora, and always-on containers for this $25/month pilot.
+
+The UI stops at ten wall-clock minutes, but the direct-to-Gemini credential remains valid for a two-minute reconnect margin. Since AWS is intentionally off the audio path, the provider-side hard upper bound is 12 minutes rather than exactly 10; budget alerts remain necessary.
+
+Pricing is a 2026-09-01 planning snapshot. Measured provider usage and actual bills are the source of truth; see [architecture.md](./architecture.md) for formulas and the future 1,000 × 45-minute scenario.
+
+## Privacy and launch limits
+
+- Audio is never uploaded by the current app.
+- P1 stores transcript/code/canvas evidence and reports in DynamoDB.
+- The S3 recordings/ lifecycle deletes current and noncurrent object versions after 30 days, but no consent/upload UI exists.
+- A user-facing export/delete workflow is still required before public production.
+- Operational logs reject interview content and credentials.
+- Public P1 also requires budget alerts, authenticated/provider E2E tests, reconnect recovery, coordinated rollback, abuse review, and load testing.
+
+## Next steps
+
+1. Deploy a development stack, replace the placeholder secret, and run an authenticated synthetic session/event test.
+2. Add an authenticated report-read endpoint and poll it so the stored Gemini grading report replaces the immediate local scorecard.
+3. Finish GoAway/network/device recovery and persist Gemini resumption handles.
+4. Add user export/deletion and explicit retention/recording consent.
+5. Add authenticated Playwright tests and a 25-concurrent-session load test.
+6. Emit measured Gemini usage/cost, reconnect, provider-error, and abandonment metrics with budget alarms.
+7. Add an authenticated release smoke and coordinated AWS-to-Vercel production promotion/rollback.
+8. Add rewind/retry, longitudinal skill history, Excalidraw, and isolated browser workers for code execution.

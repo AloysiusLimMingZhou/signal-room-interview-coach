@@ -1,6 +1,21 @@
 import { expect, test } from "@playwright/test";
 
 test("candidate completes an evidence-backed mock interview", async ({ page }) => {
+  await page.route("**/api/realtime/session", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessionId: "00000000-0000-4000-8000-000000000001",
+        mode: "mock",
+        model: "deterministic-local-interviewer",
+        expiresAt: new Date(Date.now() + 10 * 60 * 1_000).toISOString(),
+        maxDurationMinutes: 10,
+        persistence: "local",
+      }),
+    });
+  });
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: /Think out loud/i })).toBeVisible();

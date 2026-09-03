@@ -1,0 +1,284 @@
+name: Deploy P1 AWS Application Plane
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: GitHub environment and CDK stage to deploy
+        required: true
+        default: development
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: p1-aws-${{ github.event_name == 'workflow_dispatch' && inputs.stage || 'development' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # workflow_run is privileged; never check out a pull-request or fork revision here.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (vars.P1_AWS_DEPLOY_ENABLED == 'true' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: ${{ github.event_name == 'workflow_dispatch' && inputs.stage || 'development' }}
+    env:
+      CI: "true"
+      TESTED_REVISION: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      DEPLOY_ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.stage || 'development' }}
+      DEPLOY_STAGE: ${{ github.event_name == 'workflow_dispatch' && (inputs.stage == 'development' && 'dev' || inputs.stage == 'staging' && 'staging' || 'prod') || 'dev' }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
+      P1_ALLOWED_ORIGIN: ${{ vars.P1_ALLOWED_ORIGIN }}
+      GEMINI_SECRET_ARN: ${{ vars.GEMINI_SECRET_ARN }}
+      GLOBAL_MONTHLY_INTERVIEW_LIMIT: ${{ vars.GLOBAL_MONTHLY_INTERVIEW_LIMIT || '10' }}
+      USER_MONTHLY_INTERVIEW_LIMIT: ${{ vars.USER_MONTHLY_INTERVIEW_LIMIT || '10' }}
+      SESSION_DURATION_MINUTES: ${{ vars.SESSION_DURATION_MINUTES || '10' }}
+      P1_HEALTHCHECK_URL: ${{ vars.P1_HEALTHCHECK_URL }}
+      P1_SMOKE_PATH: ${{ vars.P1_SMOKE_PATH || '/v1/realtime/sessions' }}
+    steps:
+      - name: Validate deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$DEPLOY_ENVIRONMENT" =~ ^(development|staging|production)$ ]]; then
+            echo "::error::DEPLOY_ENVIRONMENT must be development, staging, or production."
+            exit 1
+          fi
+
+          if [[ ! "$DEPLOY_STAGE" =~ ^(dev|staging|prod)$ ]]; then
+            echo "::error::DEPLOY_STAGE must resolve to dev, staging, or prod."
+            exit 1
+          fi
+
+          if [[ "$DEPLOY_ENVIRONMENT" == "production" && "$GITHUB_REF_NAME" != "main" ]]; then
+            echo "::error::Production deployments must run from the main branch."
+            exit 1
+          fi
+
+          if [[ -z "$P1_ALLOWED_ORIGIN" ]]; then
+            echo "::error::Set P1_ALLOWED_ORIGIN to this environment's exact web origin."
+            exit 1
+          fi
+
+          for value in "$GLOBAL_MONTHLY_INTERVIEW_LIMIT" "$USER_MONTHLY_INTERVIEW_LIMIT" "$SESSION_DURATION_MINUTES"; do
+            if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::Quota and duration variables must be positive integers."
+              exit 1
+            fi
+          done
+
+          if (( GLOBAL_MONTHLY_INTERVIEW_LIMIT > 10 )); then
+            echo "::error::GLOBAL_MONTHLY_INTERVIEW_LIMIT exceeds the P1 hard cap of 10."
+            exit 1
+          fi
+
+          if (( USER_MONTHLY_INTERVIEW_LIMIT > GLOBAL_MONTHLY_INTERVIEW_LIMIT )); then
+            echo "::error::USER_MONTHLY_INTERVIEW_LIMIT cannot exceed the global monthly limit."
+            exit 1
+          fi
+
+          if (( SESSION_DURATION_MINUTES > 10 )); then
+            echo "::error::SESSION_DURATION_MINUTES exceeds the P1 hard cap of 10 minutes."
+            exit 1
+          fi
+
+          if [[ ! "$AWS_DEPLOY_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/.+ ]]; then
+            echo "::error::Set AWS_DEPLOY_ROLE_ARN as a GitHub environment variable to the OIDC deployment role ARN."
+            exit 1
+          fi
+          expected_account_id="${AWS_DEPLOY_ROLE_ARN#arn:aws:iam::}"
+          expected_account_id="${expected_account_id%%:*}"
+          echo "EXPECTED_AWS_ACCOUNT_ID=$expected_account_id" >> "$GITHUB_ENV"
+
+          if [[ "$AWS_REGION" != "ap-southeast-1" ]]; then
+            echo "::error::P1 is intentionally pinned to AWS Singapore (ap-southeast-1)."
+            exit 1
+          fi
+
+          echo "RESOLVED_STACK_NAME=SignalRoom-$DEPLOY_STAGE" >> "$GITHUB_ENV"
+
+      - name: Verify manually selected revision passed CI
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          query="/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$TESTED_REVISION&status=success&per_page=20"
+          if [[ "$DEPLOY_ENVIRONMENT" == "production" ]]; then
+            query="${query}&event=push"
+          fi
+          successful_runs=$(gh api "$query" --jq '.total_count')
+          if [[ "$successful_runs" -lt 1 ]]; then
+            echo "::error::$DEPLOY_ENVIRONMENT requires successful CI for $TESTED_REVISION; production specifically requires push-triggered CI."
+            exit 1
+          fi
+
+      - name: Check out the tested revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.TESTED_REVISION }}
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.19.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies from lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Authenticate to AWS with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: signal-room-${{ github.run_id }}
+          allowed-account-ids: ${{ env.EXPECTED_AWS_ACCOUNT_ID }}
+          mask-aws-account-id: true
+          unset-current-credentials: true
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity --query Account --output text
+
+      - name: Test and synthesize infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm infra:test
+          pnpm infra:synth --context "stage=$DEPLOY_STAGE"
+
+      - name: Preview deployed-stack changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm infra:diff \
+            --context "stage=$DEPLOY_STAGE" \
+            2>&1 | tee infra/cdk-diff.txt
+
+      - name: Upload CDK diff
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: cdk-diff-${{ env.DEPLOY_STAGE }}
+          path: infra/cdk-diff.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Deploy application plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm infra:deploy \
+            --context "stage=$DEPLOY_STAGE"
+
+      - name: Upload deployment outputs
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: cdk-outputs-${{ env.DEPLOY_STAGE }}
+          path: infra/cdk-outputs.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Smoke-test API endpoint and authorizer
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          health_url="$P1_HEALTHCHECK_URL"
+          api_url=""
+          if [[ -z "$health_url" && -f infra/cdk-outputs.json ]]; then
+            health_url=$(jq -r '
+              [.. | objects | to_entries[]?
+                | select(.key | test("health(check)?url"; "i"))
+                | .value
+                | select(type == "string")]
+              | first // empty
+            ' infra/cdk-outputs.json)
+          fi
+
+          if [[ -z "$health_url" && -f infra/cdk-outputs.json ]]; then
+            api_url=$(jq -r '
+              [.. | objects | to_entries[]?
+                | select(.key | test("^(http)?api(base)?url$|^apiendpoint$"; "i"))
+                | .value
+                | select(type == "string")]
+              | first // empty
+            ' infra/cdk-outputs.json)
+          fi
+
+          if [[ -z "$health_url" && -z "$api_url" ]]; then
+            if [[ "$DEPLOY_ENVIRONMENT" == "development" ]]; then
+              echo "::notice::No health or API URL was found. Set P1_HEALTHCHECK_URL or emit ApiUrl from CDK to enable the smoke test."
+              exit 0
+            fi
+            echo "::error::Staging and production deployments require P1_HEALTHCHECK_URL or a CDK API URL output."
+            exit 1
+          fi
+
+          if [[ -n "$health_url" ]]; then
+            curl --fail --silent --show-error \
+              --retry 5 \
+              --retry-all-errors \
+              --retry-delay 5 \
+              --connect-timeout 5 \
+              --max-time 20 \
+              -- "$health_url" > /dev/null
+            exit 0
+          fi
+
+          smoke_url="${api_url%/}${P1_SMOKE_PATH}"
+          status=$(curl --silent --show-error \
+            --retry 5 \
+            --retry-all-errors \
+            --retry-delay 5 \
+            --connect-timeout 5 \
+            --max-time 20 \
+            --request POST \
+            --header "content-type: application/json" \
+            --data '{}' \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            -- "$smoke_url")
+          if [[ "$status" != "401" && "$status" != "403" ]]; then
+            echo "::error::Expected the unauthenticated P1 route to reject with 401/403, received $status."
+            exit 1
+          fi
+
+      - name: Publish deployment summary
+        shell: bash
+        run: |
+          {
+            echo "### P1 AWS deployment"
+            echo "- Environment: \`$DEPLOY_ENVIRONMENT\`"
+            echo "- CDK stage: \`$DEPLOY_STAGE\`"
+            echo "- Region: \`$AWS_REGION\`"
+            echo "- Stack: \`$RESOLVED_STACK_NAME\`"
+            echo "- Revision: \`$TESTED_REVISION\`"
+          } >> "$GITHUB_STEP_SUMMARY"

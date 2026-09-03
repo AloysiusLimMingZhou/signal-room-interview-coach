@@ -1,28 +1,40 @@
 /** @jest-environment node */
 
-import { POST } from "./route";
+import { localInterviewModeAllowed, POST } from "./route";
 
 describe("POST /api/realtime/session", () => {
   const originalKey = process.env.GEMINI_API_KEY;
+  const originalP1Api = process.env.P1_API_URL;
+
+  function request(body: unknown, headers: Record<string, string> = {}) {
+    return new Request("http://localhost/api/realtime/session", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "http://localhost",
+        ...headers,
+      },
+      body: JSON.stringify(body),
+    });
+  }
 
   afterEach(() => {
     if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = originalKey;
+    if (originalP1Api === undefined) delete process.env.P1_API_URL;
+    else process.env.P1_API_URL = originalP1Api;
     jest.restoreAllMocks();
   });
 
   it("returns mock mode when no API key is configured", async () => {
     delete process.env.GEMINI_API_KEY;
-    const request = new Request("http://localhost/api/realtime/session", {
-      method: "POST",
-      body: JSON.stringify({
+    delete process.env.P1_API_URL;
+    const response = await POST(request({
         track: "system-design",
         difficulty: "senior",
         providerPreference: "gemini",
-      }),
-    });
-
-    const response = await POST(request);
+        durationMinutes: 10,
+      }));
     const payload = await response.json();
 
     expect(response.status).toBe(200);
@@ -31,28 +43,35 @@ describe("POST /api/realtime/session", () => {
     expect(payload.token).toBeUndefined();
   });
 
+  it("keeps unauthenticated local provider modes out of production", () => {
+    expect(localInterviewModeAllowed("development")).toBe(true);
+    expect(localInterviewModeAllowed("test")).toBe(true);
+    expect(localInterviewModeAllowed("production")).toBe(false);
+  });
+
   it("rejects an unsupported request", async () => {
-    const request = new Request("http://localhost/api/realtime/session", {
-      method: "POST",
-      body: JSON.stringify({ track: "trivia", difficulty: "easy" }),
-    });
-    const response = await POST(request);
+    const response = await POST(request({ track: "trivia", difficulty: "easy" }));
     expect(response.status).toBe(400);
+  });
+
+  it("rejects cross-origin token provisioning", async () => {
+    const response = await POST(request({
+      track: "system-design",
+      difficulty: "senior",
+      providerPreference: "gemini",
+    }, { Origin: "https://attacker.example" }));
+    expect(response.status).toBe(403);
   });
 
   it("does not echo the standard key when provisioning fails", async () => {
     process.env.GEMINI_API_KEY = "should-never-leak";
     jest.spyOn(globalThis, "fetch").mockResolvedValue(new Response("upstream secret", { status: 500 }));
-    const request = new Request("http://localhost/api/realtime/session", {
-      method: "POST",
-      body: JSON.stringify({
+    const response = await POST(request({
         track: "ml-design",
         difficulty: "staff",
         providerPreference: "gemini",
-      }),
-    });
-
-    const response = await POST(request);
+        durationMinutes: 10,
+      }));
     const body = await response.text();
     expect(response.status).toBe(503);
     expect(body).not.toContain("should-never-leak");
@@ -64,16 +83,12 @@ describe("POST /api/realtime/session", () => {
     const fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValue(
       Response.json({ name: "authTokens/ephemeral-example" }),
     );
-    const request = new Request("http://localhost/api/realtime/session", {
-      method: "POST",
-      body: JSON.stringify({
+    const response = await POST(request({
         track: "system-design",
         difficulty: "senior",
         providerPreference: "gemini",
-      }),
-    });
-
-    const response = await POST(request);
+        durationMinutes: 10,
+      }));
     const body = await response.text();
     const requestBody = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
 
@@ -86,6 +101,11 @@ describe("POST /api/realtime/session", () => {
     expect(requestBody.liveConnectConstraints.config.contextWindowCompression).toEqual({
       triggerTokens: 25_000,
       slidingWindow: { targetTokens: 8_000 },
+    });
+    expect(JSON.parse(body)).toMatchObject({
+      provider: "gemini",
+      maxDurationMinutes: 10,
+      persistence: "local",
     });
   });
 });

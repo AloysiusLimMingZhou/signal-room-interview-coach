@@ -1,8 +1,60 @@
+packages:
+  - "."
+
+# A project-local, ignored store keeps installs reproducible across constrained
+# local/CI environments without writing package-manager state into user profiles.
+storeDir: .pnpm-store
+
 allowBuilds:
   "@google/genai": true
   "@parcel/watcher": true
+  esbuild: true
   protobufjs: true
   unrs-resolver: true
 
+minimumReleaseAge: 1440
+minimumReleaseAgeStrict: true
+
+minimumReleaseAgeExclude:
+  - '@vercel/backends@7.0.1'
+  - '@vercel/build-utils@14.9.0'
+  - '@vercel/cervel@0.1.60'
+  - '@vercel/container@7.0.0'
+  - '@vercel/elysia@7.0.0'
+  - '@vercel/express@7.0.1'
+  - '@vercel/fastify@7.0.0'
+  - '@vercel/gatsby-plugin-vercel-builder@2.2.52'
+  - '@vercel/go@10.0.0'
+  - '@vercel/h3@7.0.0'
+  - '@vercel/hono@7.0.0'
+  - '@vercel/hydrogen@8.0.0'
+  - '@vercel/koa@7.0.0'
+  - '@vercel/nestjs@7.0.0'
+  - '@vercel/next@11.0.1'
+  - '@vercel/node@12.0.0'
+  - '@vercel/python@13.0.0'
+  - '@vercel/redwood@9.0.0'
+  - '@vercel/remix-builder@12.0.0'
+  - '@vercel/ruby@9.0.0'
+  - '@vercel/rust@8.0.0'
+  - '@vercel/static-build@9.0.0'
+  - '@vercel/vc-native-darwin-arm64@59.11.2'
+  - '@vercel/vc-native-darwin-x64@59.11.2'
+  - '@vercel/vc-native-linux-arm64@59.11.2'
+  - '@vercel/vc-native-linux-x64@59.11.2'
+  - vercel@59.11.2
+  - path-to-regexp@6.3.0
+
 overrides:
+  "@tootallnate/once@2.0.0": 2.0.1
+  "ajv@8.6.3": 8.18.0
+  "js-yaml@4.1.1": 4.3.1
+  "minimatch@10.1.1": 10.2.3
+  "path-to-regexp@8.2.0": 8.4.0
+  "path-to-regexp@8.3.0": 8.4.0
+  "smol-toml@1.5.2": 1.6.1
+  tar: 7.5.21
+  "undici@5.28.4": 6.28.0
+  "undici@5.29.0": 6.28.0
   dompurify: 3.4.13
+  path-to-regexp@>=4.0.0 <6.3.0: ^6.3.0
