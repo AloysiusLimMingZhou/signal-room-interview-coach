@@ -28,3 +28,8 @@ cdk.out/
 infra/dist/
 infra/cdk-outputs.json
 infra/cdk-diff.txt
+
+# Claude Code (local only)
+CLAUDE.md
+CLAUDE.local.md
+.claude/
