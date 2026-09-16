@@ -1,68 +1,69 @@
 import * as path from "node:path";
-import {
-  CfnOutput,
-  Duration,
-  RemovalPolicy,
-  Stack,
-  Tags,
-  type StackProps,
-} from "aws-cdk-lib";
+import { CfnOutput, Duration, RemovalPolicy, Stack, Tags, type StackProps } from "aws-cdk-lib";
 import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as authorizers from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
-import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cognito from "aws-cdk-lib/aws-cognito";
-import * as codedeploy from "aws-cdk-lib/aws-codedeploy";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as lambdaNodejs from "aws-cdk-lib/aws-lambda-nodejs";
 import * as logs from "aws-cdk-lib/aws-logs";
-import * as s3 from "aws-cdk-lib/aws-s3";
-import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import type { Construct } from "constructs";
+import {
+  allowanceEnvironment,
+  DEFAULT_ALLOWANCE_LIMITS,
+  HARD_LIMITS,
+  validateAllowanceLimits,
+  type AllowanceLimits,
+} from "./access-policy";
+import { addProductionObservability } from "./observability";
+import { isProductionStage } from "./p1-config";
 
 export interface P1StackProps extends StackProps {
   stageName: string;
   allowedOrigin: string;
-  globalMonthlyInterviewLimit?: number;
-  userMonthlyInterviewLimit?: number;
-  sessionDurationMinutes?: number;
-  geminiSecretArn?: string;
+  allowances?: AllowanceLimits;
+  voiceSessionMinutes?: number;
+  alertEmail?: string;
 }
 
 interface FunctionResources {
   readonly fn: lambdaNodejs.NodejsFunction;
-  readonly invokable: lambda.IFunction;
   readonly role: iam.Role;
-  readonly logGroup: logs.LogGroup;
 }
 
+type TableAction =
+  | "dynamodb:GetItem"
+  | "dynamodb:PutItem"
+  | "dynamodb:UpdateItem"
+  | "dynamodb:DeleteItem"
+  | "dynamodb:Query";
+
 const METRIC_NAMESPACE = "SignalRoom/P1";
+const COGNITO_GROUPS = [
+  { name: "owner", precedence: 0, description: "Project owner: full voice and text allowance" },
+  { name: "guest", precedence: 10, description: "Invited guest: small voice and text allowance" },
+] as const;
+export const GRADING_MAX_RECEIVE_COUNT = 3;
 
 export class P1Stack extends Stack {
   constructor(scope: Construct, id: string, props: P1StackProps) {
     super(scope, id, props);
 
-    const isProduction = props.stageName === "prod" || props.stageName === "production";
+    const isProduction = isProductionStage(props.stageName);
     const retention = isProduction ? logs.RetentionDays.ONE_MONTH : logs.RetentionDays.ONE_WEEK;
-    const environmentDimension = isProduction
-      ? "production"
-      : props.stageName === "stage" || props.stageName === "staging"
-        ? "staging"
-        : "development";
-    const globalMonthlyInterviewLimit = props.globalMonthlyInterviewLimit ?? 10;
-    const userMonthlyInterviewLimit = props.userMonthlyInterviewLimit ?? 10;
-    const sessionDurationMinutes = props.sessionDurationMinutes ?? 10;
+    const removalPolicy = isProduction ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
+    const allowances = validateAllowanceLimits(props.allowances ?? DEFAULT_ALLOWANCE_LIMITS);
+    const voiceSessionMinutes = props.voiceSessionMinutes ?? HARD_LIMITS.voiceSessionMinutes;
 
     if (props.allowedOrigin === "*") throw new Error("allowedOrigin must be explicit.");
-    if (globalMonthlyInterviewLimit > 10) throw new Error("The global pilot cap cannot exceed ten sessions.");
-    if (userMonthlyInterviewLimit > globalMonthlyInterviewLimit) {
-      throw new Error("The per-user limit cannot exceed the global pilot cap.");
+    if (voiceSessionMinutes > HARD_LIMITS.voiceSessionMinutes) {
+      throw new Error("Voice sessions cannot exceed the ten-minute hard cap.");
     }
-    if (sessionDurationMinutes > 10) throw new Error("The P1 pilot supports at most ten-minute sessions.");
+    if (isProduction && !props.alertEmail) throw new Error("Production requires an alert email.");
 
     Tags.of(this).add("Application", "SignalRoom");
     Tags.of(this).add("Environment", props.stageName);
@@ -70,13 +71,11 @@ export class P1Stack extends Stack {
 
     const userPool = new cognito.UserPool(this, "UserPool", {
       userPoolName: `signal-room-${props.stageName}`,
-      selfSignUpEnabled: true,
+      selfSignUpEnabled: false,
       signInAliases: { email: true },
       signInCaseSensitive: false,
       autoVerify: { email: true },
-      standardAttributes: {
-        email: { required: true, mutable: true },
-      },
+      standardAttributes: { email: { required: true, mutable: true } },
       passwordPolicy: {
         minLength: 12,
         requireDigits: true,
@@ -88,8 +87,16 @@ export class P1Stack extends Stack {
       mfa: cognito.Mfa.OPTIONAL,
       mfaSecondFactor: { otp: true, sms: false },
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
-      removalPolicy: isProduction ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      removalPolicy,
     });
+    for (const group of COGNITO_GROUPS) {
+      new cognito.CfnUserPoolGroup(this, `${group.name}Group`, {
+        userPoolId: userPool.userPoolId,
+        groupName: group.name,
+        precedence: group.precedence,
+        description: group.description,
+      });
+    }
     const userPoolClient = userPool.addClient("WebClient", {
       userPoolClientName: `signal-room-web-${props.stageName}`,
       generateSecret: false,
@@ -107,9 +114,7 @@ export class P1Stack extends Stack {
       },
     });
     const userPoolDomain = userPool.addDomain("HostedDomain", {
-      cognitoDomain: {
-        domainPrefix: `signal-room-${props.stageName}-${this.account}`,
-      },
+      cognitoDomain: { domainPrefix: `signal-room-${props.stageName}-${this.account}` },
     });
 
     const table = new dynamodb.Table(this, "InterviewTable", {
@@ -121,27 +126,7 @@ export class P1Stack extends Stack {
       timeToLiveAttribute: "expiresAt",
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: isProduction },
       deletionProtection: isProduction,
-      removalPolicy: isProduction ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
-    });
-
-    const artifacts = new s3.Bucket(this, "Artifacts", {
-      bucketName: undefined,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      enforceSSL: true,
-      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
-      versioned: isProduction,
-      lifecycleRules: [
-        {
-          id: "DeleteOptInRecordingsAfter30Days",
-          enabled: true,
-          prefix: "recordings/",
-          expiration: Duration.days(30),
-          noncurrentVersionExpiration: Duration.days(30),
-          abortIncompleteMultipartUploadAfter: Duration.days(7),
-        },
-      ],
-      removalPolicy: RemovalPolicy.RETAIN,
+      removalPolicy,
     });
 
     const gradingDlq = new sqs.Queue(this, "GradingDlq", {
@@ -149,7 +134,7 @@ export class P1Stack extends Stack {
       encryption: sqs.QueueEncryption.SQS_MANAGED,
       enforceSSL: true,
       retentionPeriod: Duration.days(14),
-      removalPolicy: isProduction ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      removalPolicy,
     });
     const gradingQueue = new sqs.Queue(this, "GradingQueue", {
       queueName: `signal-room-grading-${props.stageName}`,
@@ -157,21 +142,17 @@ export class P1Stack extends Stack {
       enforceSSL: true,
       retentionPeriod: Duration.days(4),
       visibilityTimeout: Duration.minutes(2),
-      deadLetterQueue: { queue: gradingDlq, maxReceiveCount: 3 },
-      removalPolicy: isProduction ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      deadLetterQueue: { queue: gradingDlq, maxReceiveCount: GRADING_MAX_RECEIVE_COUNT },
+      removalPolicy,
     });
 
-    const geminiSecret = props.geminiSecretArn
-      ? secretsmanager.Secret.fromSecretCompleteArn(this, "GeminiSecret", props.geminiSecretArn)
-      : new secretsmanager.Secret(this, "GeminiSecret", {
-          secretName: `/signal-room/${props.stageName}/gemini-api-key`,
-          description: "Replace this generated placeholder with the Gemini API key after deployment.",
-          generateSecretString: {
-            passwordLength: 40,
-            excludePunctuation: true,
-          },
-          removalPolicy: RemovalPolicy.RETAIN,
-        });
+    // Created manually once per stage (CloudFormation cannot create SecureString values).
+    const geminiKeyParameterName = `/signal-room/${props.stageName}/gemini-api-key`;
+    const baseEnvironment = {
+      TABLE_NAME: table.tableName,
+      ENVIRONMENT: props.stageName,
+      LOG_NAMESPACE: METRIC_NAMESPACE,
+    };
 
     const sessionFunction = this.createFunction("Session", props.stageName, retention, {
       entry: this.lambdaEntry("session-handler.ts"),
@@ -179,14 +160,11 @@ export class P1Stack extends Stack {
       memorySize: 512,
       reservedConcurrency: 5,
       environment: {
-        TABLE_NAME: table.tableName,
-        GEMINI_SECRET_ARN: geminiSecret.secretArn,
+        ...baseEnvironment,
+        ...allowanceEnvironment(allowances),
+        GEMINI_KEY_PARAMETER_NAME: geminiKeyParameterName,
         GEMINI_LIVE_MODEL: "gemini-3.1-flash-live-preview",
-        GLOBAL_MONTHLY_INTERVIEW_LIMIT: String(globalMonthlyInterviewLimit),
-        USER_MONTHLY_INTERVIEW_LIMIT: String(userMonthlyInterviewLimit),
-        SESSION_DURATION_MINUTES: String(sessionDurationMinutes),
-        ENVIRONMENT: props.stageName,
-        LOG_NAMESPACE: METRIC_NAMESPACE,
+        VOICE_SESSION_MINUTES: String(voiceSessionMinutes),
       },
     });
     const eventFunction = this.createFunction("Event", props.stageName, retention, {
@@ -195,12 +173,10 @@ export class P1Stack extends Stack {
       memorySize: 512,
       reservedConcurrency: 10,
       environment: {
-        TABLE_NAME: table.tableName,
+        ...baseEnvironment,
         GRADING_QUEUE_URL: gradingQueue.queueUrl,
         MAX_SESSION_EVENTS: "500",
         SESSION_APPEND_GRACE_SECONDS: "120",
-        ENVIRONMENT: props.stageName,
-        LOG_NAMESPACE: METRIC_NAMESPACE,
       },
     });
     const graderFunction = this.createFunction("Grader", props.stageName, retention, {
@@ -209,79 +185,132 @@ export class P1Stack extends Stack {
       memorySize: 1_024,
       reservedConcurrency: 2,
       environment: {
-        TABLE_NAME: table.tableName,
-        GEMINI_SECRET_ARN: geminiSecret.secretArn,
+        ...baseEnvironment,
+        GEMINI_KEY_PARAMETER_NAME: geminiKeyParameterName,
         GEMINI_GRADER_MODEL: "gemini-2.5-flash-lite",
-        ENVIRONMENT: props.stageName,
-        LOG_NAMESPACE: METRIC_NAMESPACE,
+        GRADING_MAX_RECEIVE_COUNT: String(GRADING_MAX_RECEIVE_COUNT),
       },
     });
+    const accountFunction = this.createFunction("Account", props.stageName, retention, {
+      entry: this.lambdaEntry("account-handler.ts"),
+      timeout: Duration.seconds(10),
+      memorySize: 256,
+      reservedConcurrency: 5,
+      environment: { ...baseEnvironment, ...allowanceEnvironment(allowances) },
+    });
 
+    // DynamoDB authorizes transactions by their underlying item actions.
     this.grantTableActions(sessionFunction.role, table, [
       "dynamodb:GetItem",
-      "dynamodb:TransactWriteItems",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:DeleteItem",
     ]);
     this.grantTableActions(eventFunction.role, table, [
       "dynamodb:GetItem",
       "dynamodb:Query",
-      "dynamodb:TransactWriteItems",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
     ]);
     this.grantTableActions(graderFunction.role, table, [
       "dynamodb:GetItem",
       "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
       "dynamodb:Query",
     ]);
-    geminiSecret.grantRead(sessionFunction.role);
-    geminiSecret.grantRead(graderFunction.role);
+    this.grantTableActions(accountFunction.role, table, ["dynamodb:GetItem", "dynamodb:Query"]);
+    this.grantGeminiKeyRead(sessionFunction.role, geminiKeyParameterName);
+    this.grantGeminiKeyRead(graderFunction.role, geminiKeyParameterName);
     gradingQueue.grantSendMessages(eventFunction.role);
     gradingQueue.grantConsumeMessages(graderFunction.role);
-    graderFunction.invokable.addEventSource(new lambdaEventSources.SqsEventSource(gradingQueue, {
+    graderFunction.fn.addEventSource(new lambdaEventSources.SqsEventSource(gradingQueue, {
       batchSize: 5,
       maxBatchingWindow: Duration.seconds(5),
       reportBatchItemFailures: true,
     }));
 
-    const apiAccessLogs = new logs.LogGroup(this, "ApiAccessLogs", {
-      logGroupName: `/aws/apigateway/signal-room-${props.stageName}`,
+    const api = this.createApi({
+      stageName: props.stageName,
+      allowedOrigin: props.allowedOrigin,
       retention,
-      removalPolicy: isProduction ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      removalPolicy,
+      userPool,
+      userPoolClient,
+      sessionFunction: sessionFunction.fn,
+      eventFunction: eventFunction.fn,
+      accountFunction: accountFunction.fn,
     });
-    apiAccessLogs.grantWrite(new iam.ServicePrincipal("apigateway.amazonaws.com"));
+
+    if (isProduction && props.alertEmail) {
+      const dashboard = addProductionObservability(this, {
+        stageName: props.stageName,
+        api,
+        functions: [sessionFunction.fn, eventFunction.fn, graderFunction.fn, accountFunction.fn],
+        gradingDlq,
+        metricNamespace: METRIC_NAMESPACE,
+        alertEmail: props.alertEmail,
+      });
+      new CfnOutput(this, "DashboardName", { value: dashboard.dashboardName });
+    }
+
+    new CfnOutput(this, "ApiUrl", { value: api.apiEndpoint });
+    new CfnOutput(this, "UserPoolId", { value: userPool.userPoolId });
+    new CfnOutput(this, "UserPoolClientId", { value: userPoolClient.userPoolClientId });
+    new CfnOutput(this, "CognitoDomain", { value: userPoolDomain.baseUrl() });
+    new CfnOutput(this, "GeminiKeyParameterName", { value: geminiKeyParameterName });
+  }
+
+  private createApi(input: {
+    stageName: string;
+    allowedOrigin: string;
+    retention: logs.RetentionDays;
+    removalPolicy: RemovalPolicy;
+    userPool: cognito.UserPool;
+    userPoolClient: cognito.UserPoolClient;
+    sessionFunction: lambda.IFunction;
+    eventFunction: lambda.IFunction;
+    accountFunction: lambda.IFunction;
+  }): apigwv2.HttpApi {
+    const accessLogs = new logs.LogGroup(this, "ApiAccessLogs", {
+      logGroupName: `/aws/apigateway/signal-room-${input.stageName}`,
+      retention: input.retention,
+      removalPolicy: input.removalPolicy,
+    });
+    accessLogs.grantWrite(new iam.ServicePrincipal("apigateway.amazonaws.com"));
 
     const api = new apigwv2.HttpApi(this, "HttpApi", {
-      apiName: `signal-room-${props.stageName}`,
-      description: "Authenticated P1 interview state and Gemini session API",
+      apiName: `signal-room-${input.stageName}`,
+      description: "Authenticated interview state, account, and Gemini session API",
       createDefaultStage: true,
       corsPreflight: {
-        allowOrigins: [props.allowedOrigin],
+        allowOrigins: [input.allowedOrigin],
         allowHeaders: ["authorization", "content-type", "idempotency-key"],
-        allowMethods: [apigwv2.CorsHttpMethod.POST, apigwv2.CorsHttpMethod.OPTIONS],
+        allowMethods: [apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST, apigwv2.CorsHttpMethod.OPTIONS],
         maxAge: Duration.hours(1),
       },
     });
-    const jwtAuthorizer = new authorizers.HttpJwtAuthorizer(
+    const authorizer = new authorizers.HttpJwtAuthorizer(
       "CognitoJwt",
-      `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`,
-      { jwtAudience: [userPoolClient.userPoolClientId] },
+      `https://cognito-idp.${this.region}.amazonaws.com/${input.userPool.userPoolId}`,
+      { jwtAudience: [input.userPoolClient.userPoolClientId] },
     );
-    api.addRoutes({
-      path: "/v1/realtime/sessions",
-      methods: [apigwv2.HttpMethod.POST],
-      authorizer: jwtAuthorizer,
-      integration: new integrations.HttpLambdaIntegration("SessionIntegration", sessionFunction.invokable),
-    });
-    api.addRoutes({
-      path: "/v1/interview-events",
-      methods: [apigwv2.HttpMethod.POST],
-      authorizer: jwtAuthorizer,
-      integration: new integrations.HttpLambdaIntegration("EventIntegration", eventFunction.invokable),
-    });
+    const accountIntegration = new integrations.HttpLambdaIntegration("AccountIntegration", input.accountFunction);
+    const routes: Array<[string, apigwv2.HttpMethod, apigwv2.HttpRouteIntegration]> = [
+      ["/v1/realtime/sessions", apigwv2.HttpMethod.POST, new integrations.HttpLambdaIntegration("SessionIntegration", input.sessionFunction)],
+      ["/v1/interview-events", apigwv2.HttpMethod.POST, new integrations.HttpLambdaIntegration("EventIntegration", input.eventFunction)],
+      ["/v1/me", apigwv2.HttpMethod.GET, accountIntegration],
+      ["/v1/sessions", apigwv2.HttpMethod.GET, accountIntegration],
+      ["/v1/sessions/{sessionId}/report", apigwv2.HttpMethod.GET, accountIntegration],
+    ];
+    for (const [routePath, method, integration] of routes) {
+      api.addRoutes({ path: routePath, methods: [method], authorizer, integration });
+    }
 
     const defaultStage = api.defaultStage;
     if (!defaultStage) throw new Error("The HTTP API default stage was not created.");
     const cfnStage = defaultStage.node.defaultChild as apigwv2.CfnStage;
     cfnStage.accessLogSettings = {
-      destinationArn: apiAccessLogs.logGroupArn,
+      destinationArn: accessLogs.logGroupArn,
       format: JSON.stringify({
         requestId: "$context.requestId",
         routeKey: "$context.routeKey",
@@ -297,30 +326,8 @@ export class P1Stack extends Stack {
       throttlingBurstLimit: 20,
       throttlingRateLimit: 10,
     };
-    cfnStage.node.addDependency(apiAccessLogs);
-
-    const dashboard = new cloudwatch.Dashboard(this, "OperationsDashboard", {
-      dashboardName: `signal-room-${props.stageName}`,
-      defaultInterval: Duration.hours(3),
-    });
-    this.addObservability({
-      api,
-      stageName: "$default",
-      table,
-      gradingQueue,
-      gradingDlq,
-      functions: [sessionFunction.fn, eventFunction.fn, graderFunction.fn],
-      dashboard,
-      environmentDimension,
-    });
-
-    new CfnOutput(this, "ApiUrl", { value: api.apiEndpoint });
-    new CfnOutput(this, "UserPoolId", { value: userPool.userPoolId });
-    new CfnOutput(this, "UserPoolClientId", { value: userPoolClient.userPoolClientId });
-    new CfnOutput(this, "CognitoDomain", { value: userPoolDomain.baseUrl() });
-    new CfnOutput(this, "ArtifactsBucketName", { value: artifacts.bucketName });
-    new CfnOutput(this, "GeminiSecretArn", { value: geminiSecret.secretArn });
-    new CfnOutput(this, "DashboardName", { value: dashboard.dashboardName });
+    cfnStage.node.addDependency(accessLogs);
+    return api;
   }
 
   private lambdaEntry(fileName: string): string {
@@ -341,21 +348,18 @@ export class P1Stack extends Stack {
       environment: Record<string, string>;
     },
   ): FunctionResources {
-    const id = `${purpose}Function`;
     const functionName = `signal-room-${purpose.toLowerCase()}-${stageName}`;
     const logGroup = new logs.LogGroup(this, `${purpose}Logs`, {
       logGroupName: `/aws/lambda/${functionName}`,
       retention,
-      removalPolicy: stageName === "prod" || stageName === "production"
-        ? RemovalPolicy.RETAIN
-        : RemovalPolicy.DESTROY,
+      removalPolicy: isProductionStage(stageName) ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     });
     const role = new iam.Role(this, `${purpose}Role`, {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
       description: `Least-privilege execution role for the ${purpose.toLowerCase()} Lambda`,
     });
     logGroup.grantWrite(role);
-    const fn = new lambdaNodejs.NodejsFunction(this, id, {
+    const fn = new lambdaNodejs.NodejsFunction(this, `${purpose}Function`, {
       functionName,
       entry: options.entry,
       handler: "handler",
@@ -382,36 +386,10 @@ export class P1Stack extends Stack {
       },
     });
     fn.node.addDependency(logGroup);
-
-    const isProduction = stageName === "prod" || stageName === "production";
-    if (!isProduction) return { fn, invokable: fn, role, logGroup };
-
-    const liveAlias = new lambda.Alias(this, `${purpose}LiveAlias`, {
-      aliasName: "live",
-      version: fn.currentVersion,
-    });
-    const canaryErrors = new cloudwatch.Alarm(this, `${purpose}CanaryErrorsAlarm`, {
-      metric: liveAlias.metricErrors({ period: Duration.minutes(1) }),
-      threshold: 1,
-      evaluationPeriods: 1,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    new codedeploy.LambdaDeploymentGroup(this, `${purpose}CanaryDeployment`, {
-      alias: liveAlias,
-      deploymentGroupName: `signal-room-${purpose.toLowerCase()}-${stageName}`,
-      deploymentConfig: codedeploy.LambdaDeploymentConfig.CANARY_10PERCENT_5MINUTES,
-      alarms: [canaryErrors],
-      autoRollback: {
-        deploymentInAlarm: true,
-        failedDeployment: true,
-        stoppedDeployment: true,
-      },
-    });
-    return { fn, invokable: liveAlias, role, logGroup };
+    return { fn, role };
   }
 
-  private grantTableActions(role: iam.Role, table: dynamodb.Table, actions: string[]): void {
+  private grantTableActions(role: iam.Role, table: dynamodb.Table, actions: TableAction[]): void {
     role.addToPolicy(new iam.PolicyStatement({
       sid: "InterviewTableAccess",
       actions,
@@ -419,172 +397,17 @@ export class P1Stack extends Stack {
     }));
   }
 
-  private addObservability(input: {
-    api: apigwv2.HttpApi;
-    stageName: string;
-    table: dynamodb.Table;
-    gradingQueue: sqs.Queue;
-    gradingDlq: sqs.Queue;
-    functions: lambda.Function[];
-    dashboard: cloudwatch.Dashboard;
-    environmentDimension: string;
-  }): void {
-    const period = Duration.minutes(1);
-    const apiDimensions = { ApiId: input.api.apiId, Stage: input.stageName };
-    const apiRequests = new cloudwatch.Metric({
-      namespace: "AWS/ApiGateway",
-      metricName: "Count",
-      dimensionsMap: apiDimensions,
-      statistic: "Sum",
-      period,
-    });
-    const api5xx = new cloudwatch.Metric({
-      namespace: "AWS/ApiGateway",
-      metricName: "5xx",
-      dimensionsMap: apiDimensions,
-      statistic: "Sum",
-      period,
-    });
-    const apiLatency = new cloudwatch.Metric({
-      namespace: "AWS/ApiGateway",
-      metricName: "IntegrationLatency",
-      dimensionsMap: apiDimensions,
-      statistic: "p95",
-      period,
-    });
-    const apiErrorPercent = new cloudwatch.MathExpression({
-      expression: "IF(requests > 0, 100 * errors / requests, 0)",
-      usingMetrics: { requests: apiRequests, errors: api5xx },
-      period,
-      label: "API 5xx %",
-    });
-    new cloudwatch.Alarm(this, "ApiServerErrorAlarm", {
-      metric: apiErrorPercent,
-      threshold: 1,
-      evaluationPeriods: 5,
-      datapointsToAlarm: 3,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    new cloudwatch.Alarm(this, "ApiLatencyAlarm", {
-      metric: apiLatency,
-      threshold: 1_000,
-      evaluationPeriods: 5,
-      datapointsToAlarm: 3,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-
-    const sessionSetup = new cloudwatch.Metric({
-      namespace: METRIC_NAMESPACE,
-      metricName: "session_setup_ms",
-      dimensionsMap: { Environment: input.environmentDimension, Provider: "application" },
-      statistic: "p95",
-      period,
-    });
-    new cloudwatch.Alarm(this, "SessionSetupAlarm", {
-      metric: sessionSetup,
-      threshold: 3_000,
-      evaluationPeriods: 3,
-      datapointsToAlarm: 2,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-
-    for (const fn of input.functions) {
-      new cloudwatch.Alarm(this, `${fn.node.id}ErrorsAlarm`, {
-        metric: fn.metricErrors({ period }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      });
-      new cloudwatch.Alarm(this, `${fn.node.id}ThrottlesAlarm`, {
-        metric: fn.metricThrottles({ period }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      });
-    }
-
-    const tableDimensions = { TableName: input.table.tableName };
-    const readThrottles = new cloudwatch.Metric({
-      namespace: "AWS/DynamoDB",
-      metricName: "ReadThrottleEvents",
-      dimensionsMap: tableDimensions,
-      statistic: "Sum",
-      period,
-    });
-    const writeThrottles = new cloudwatch.Metric({
-      namespace: "AWS/DynamoDB",
-      metricName: "WriteThrottleEvents",
-      dimensionsMap: tableDimensions,
-      statistic: "Sum",
-      period,
-    });
-    const tableThrottles = new cloudwatch.MathExpression({
-      expression: "reads + writes",
-      usingMetrics: { reads: readThrottles, writes: writeThrottles },
-      period,
-      label: "DynamoDB throttles",
-    });
-    new cloudwatch.Alarm(this, "DynamoThrottleAlarm", {
-      metric: tableThrottles,
-      threshold: 1,
-      evaluationPeriods: 1,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    const tableSystemErrors = new cloudwatch.Metric({
-      namespace: "AWS/DynamoDB",
-      metricName: "SystemErrors",
-      dimensionsMap: tableDimensions,
-      statistic: "Sum",
-      period,
-    });
-    new cloudwatch.Alarm(this, "DynamoSystemErrorAlarm", {
-      metric: tableSystemErrors,
-      threshold: 1,
-      evaluationPeriods: 1,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-
-    const queueAge = input.gradingQueue.metricApproximateAgeOfOldestMessage({ period });
-    const dlqDepth = input.gradingDlq.metricApproximateNumberOfMessagesVisible({ period });
-    new cloudwatch.Alarm(this, "GradingQueueAgeAlarm", {
-      metric: queueAge,
-      threshold: 300,
-      evaluationPeriods: 1,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    new cloudwatch.Alarm(this, "GradingDlqAlarm", {
-      metric: dlqDepth,
-      threshold: 1,
-      evaluationPeriods: 1,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-
-    const tableLatency = new cloudwatch.Metric({
-      namespace: "AWS/DynamoDB",
-      metricName: "SuccessfulRequestLatency",
-      dimensionsMap: { ...tableDimensions, Operation: "TransactWriteItems" },
-      statistic: "p95",
-      period,
-    });
-    input.dashboard.addWidgets(
-      new cloudwatch.GraphWidget({ title: "HTTP API", left: [apiRequests, apiErrorPercent], right: [apiLatency] }),
-      new cloudwatch.GraphWidget({ title: "Session setup", left: [sessionSetup] }),
-      new cloudwatch.GraphWidget({
-        title: "Lambda errors and throttles",
-        left: input.functions.map((fn) => fn.metricErrors({ period })),
-        right: input.functions.map((fn) => fn.metricThrottles({ period })),
-      }),
-      new cloudwatch.GraphWidget({ title: "DynamoDB", left: [tableThrottles, tableSystemErrors], right: [tableLatency] }),
-      new cloudwatch.GraphWidget({ title: "Grading queue", left: [queueAge], right: [dlqDepth] }),
-    );
+  private grantGeminiKeyRead(role: iam.Role, parameterName: string): void {
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: "GeminiKeyParameterRead",
+      actions: ["ssm:GetParameter"],
+      resources: [this.formatArn({ service: "ssm", resource: "parameter", resourceName: parameterName.slice(1) })],
+    }));
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: "GeminiKeyDecryptViaSsm",
+      actions: ["kms:Decrypt"],
+      resources: [this.formatArn({ service: "kms", resource: "key", resourceName: "*" })],
+      conditions: { StringEquals: { "kms:ViaService": `ssm.${this.region}.amazonaws.com` } },
+    }));
   }
 }
