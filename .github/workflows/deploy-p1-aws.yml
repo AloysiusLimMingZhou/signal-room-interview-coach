@@ -14,7 +14,6 @@ on:
         type: choice
         options:
           - development
-          - staging
           - production
 
 permissions:
@@ -44,14 +43,18 @@ jobs:
       CI: "true"
       TESTED_REVISION: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       DEPLOY_ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.stage || 'development' }}
-      DEPLOY_STAGE: ${{ github.event_name == 'workflow_dispatch' && (inputs.stage == 'development' && 'dev' || inputs.stage == 'staging' && 'staging' || 'prod') || 'dev' }}
+      DEPLOY_STAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.stage == 'production' && 'prod' || 'dev' }}
       AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
       AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
       P1_ALLOWED_ORIGIN: ${{ vars.P1_ALLOWED_ORIGIN }}
-      GEMINI_SECRET_ARN: ${{ vars.GEMINI_SECRET_ARN }}
-      GLOBAL_MONTHLY_INTERVIEW_LIMIT: ${{ vars.GLOBAL_MONTHLY_INTERVIEW_LIMIT || '10' }}
-      USER_MONTHLY_INTERVIEW_LIMIT: ${{ vars.USER_MONTHLY_INTERVIEW_LIMIT || '10' }}
-      SESSION_DURATION_MINUTES: ${{ vars.SESSION_DURATION_MINUTES || '10' }}
+      VOICE_GLOBAL_MONTHLY_LIMIT: ${{ vars.VOICE_GLOBAL_MONTHLY_LIMIT }}
+      VOICE_OWNER_MONTHLY_LIMIT: ${{ vars.VOICE_OWNER_MONTHLY_LIMIT }}
+      VOICE_GUEST_MONTHLY_LIMIT: ${{ vars.VOICE_GUEST_MONTHLY_LIMIT }}
+      TEXT_GLOBAL_MONTHLY_LIMIT: ${{ vars.TEXT_GLOBAL_MONTHLY_LIMIT }}
+      TEXT_OWNER_MONTHLY_LIMIT: ${{ vars.TEXT_OWNER_MONTHLY_LIMIT }}
+      TEXT_GUEST_MONTHLY_LIMIT: ${{ vars.TEXT_GUEST_MONTHLY_LIMIT }}
+      VOICE_SESSION_MINUTES: ${{ vars.VOICE_SESSION_MINUTES }}
+      ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
       P1_HEALTHCHECK_URL: ${{ vars.P1_HEALTHCHECK_URL }}
       P1_SMOKE_PATH: ${{ vars.P1_SMOKE_PATH || '/v1/realtime/sessions' }}
     steps:
@@ -60,13 +63,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ ! "$DEPLOY_ENVIRONMENT" =~ ^(development|staging|production)$ ]]; then
-            echo "::error::DEPLOY_ENVIRONMENT must be development, staging, or production."
+          if [[ ! "$DEPLOY_ENVIRONMENT" =~ ^(development|production)$ ]]; then
+            echo "::error::DEPLOY_ENVIRONMENT must be development or production."
             exit 1
           fi
 
-          if [[ ! "$DEPLOY_STAGE" =~ ^(dev|staging|prod)$ ]]; then
-            echo "::error::DEPLOY_STAGE must resolve to dev, staging, or prod."
+          if [[ ! "$DEPLOY_STAGE" =~ ^(dev|prod)$ ]]; then
+            echo "::error::DEPLOY_STAGE must resolve to dev or prod."
             exit 1
           fi
 
@@ -80,27 +83,13 @@ jobs:
             exit 1
           fi
 
-          for value in "$GLOBAL_MONTHLY_INTERVIEW_LIMIT" "$USER_MONTHLY_INTERVIEW_LIMIT" "$SESSION_DURATION_MINUTES"; do
-            if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
-              echo "::error::Quota and duration variables must be positive integers."
-              exit 1
-            fi
-          done
-
-          if (( GLOBAL_MONTHLY_INTERVIEW_LIMIT > 10 )); then
-            echo "::error::GLOBAL_MONTHLY_INTERVIEW_LIMIT exceeds the P1 hard cap of 10."
+          if [[ "$DEPLOY_ENVIRONMENT" == "production" && -z "$ALERT_EMAIL" ]]; then
+            echo "::error::Set the ALERT_EMAIL secret on the production environment."
             exit 1
           fi
 
-          if (( USER_MONTHLY_INTERVIEW_LIMIT > GLOBAL_MONTHLY_INTERVIEW_LIMIT )); then
-            echo "::error::USER_MONTHLY_INTERVIEW_LIMIT cannot exceed the global monthly limit."
-            exit 1
-          fi
-
-          if (( SESSION_DURATION_MINUTES > 10 )); then
-            echo "::error::SESSION_DURATION_MINUTES exceeds the P1 hard cap of 10 minutes."
-            exit 1
-          fi
+          # Allowance and duration hard caps are enforced by resolveP1Config during
+          # `pnpm infra:synth`, which runs before any deploy step.
 
           if [[ ! "$AWS_DEPLOY_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/.+ ]]; then
             echo "::error::Set AWS_DEPLOY_ROLE_ARN as a GitHub environment variable to the OIDC deployment role ARN."
@@ -111,7 +100,7 @@ jobs:
           echo "EXPECTED_AWS_ACCOUNT_ID=$expected_account_id" >> "$GITHUB_ENV"
 
           if [[ "$AWS_REGION" != "ap-southeast-1" ]]; then
-            echo "::error::P1 is intentionally pinned to AWS Singapore (ap-southeast-1)."
+            echo "::error::Signal Room is intentionally pinned to AWS Singapore (ap-southeast-1)."
             exit 1
           fi
 
@@ -238,7 +227,7 @@ jobs:
               echo "::notice::No health or API URL was found. Set P1_HEALTHCHECK_URL or emit ApiUrl from CDK to enable the smoke test."
               exit 0
             fi
-            echo "::error::Staging and production deployments require P1_HEALTHCHECK_URL or a CDK API URL output."
+            echo "::error::Production deployments require P1_HEALTHCHECK_URL or a CDK API URL output."
             exit 1
           fi
 
