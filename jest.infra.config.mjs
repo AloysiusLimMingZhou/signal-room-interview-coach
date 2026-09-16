@@ -4,7 +4,7 @@ const createJestConfig = nextJest({ dir: "./" });
 
 export default createJestConfig({
   testEnvironment: "node",
-  testRegex: "infra/test/.*\\.test\\.ts$",
+  testMatch: ["<rootDir>/infra/test/**/*.test.ts"],
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1",
   },
