@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { ZodError } from "zod";
-import { documentClient, requiredEnvironment } from "./shared/aws-clients";
+import { overallScore } from "../../src/lib/p1/report";
+import { documentClient, positiveIntegerEnvironment, requiredEnvironment } from "./shared/aws-clients";
 import {
   gradingMessageSchema,
   interviewEventSchema,
@@ -10,10 +11,12 @@ import {
 } from "./shared/contracts";
 import { gradeEvidence, loadGeminiApiKey } from "./shared/gemini";
 import { baseLogMetadata, emitMetric, hashReference, writeSafeLog } from "./shared/logging";
+import { HISTORY_SORT_PREFIX, historyKey, reportKey, sessionMetaKey } from "./shared/table-keys";
 
-interface SqsRecord {
+export interface SqsRecord {
   messageId: string;
   body: string;
+  attributes?: { ApproximateReceiveCount?: string };
 }
 
 interface SqsEvent {
@@ -28,6 +31,7 @@ interface SessionRecord {
   userId?: unknown;
   track?: unknown;
   difficulty?: unknown;
+  historySk?: unknown;
 }
 
 interface ReportRecord {
@@ -48,7 +52,9 @@ interface StoredEventRecord {
 
 const OPERATION = "grading.run" as const;
 const MAX_EVIDENCE_BYTES = 400 * 1_024;
-const REPORT_SORT_KEY = "REPORT#P1#v1";
+const DEFAULT_MAX_RECEIVE_COUNT = 3;
+
+type HistoryOutcome = { status: "graded"; overallScore: number } | { status: "failed" };
 
 function asInterviewEvent(item: StoredEventRecord): InterviewEvent {
   return interviewEventSchema.parse({
@@ -64,9 +70,9 @@ function asInterviewEvent(item: StoredEventRecord): InterviewEvent {
 async function getSession(tableName: string, message: GradingMessage): Promise<SessionRecord> {
   const response = await documentClient.send(new GetCommand({
     TableName: tableName,
-    Key: { PK: `SESSION#${message.sessionId}`, SK: "META" },
+    Key: sessionMetaKey(message.sessionId),
     ConsistentRead: true,
-    ProjectionExpression: "userId, track, difficulty",
+    ProjectionExpression: "userId, track, difficulty, historySk",
   }));
   const session = response.Item as SessionRecord | undefined;
   if (!session || session.userId !== message.userId) throw new Error("Grading session ownership check failed.");
@@ -76,7 +82,7 @@ async function getSession(tableName: string, message: GradingMessage): Promise<S
 async function getReportRecord(tableName: string, sessionId: string): Promise<ReportRecord | undefined> {
   const response = await documentClient.send(new GetCommand({
     TableName: tableName,
-    Key: { PK: `SESSION#${sessionId}`, SK: REPORT_SORT_KEY },
+    Key: reportKey(sessionId),
     ConsistentRead: true,
     ProjectionExpression: "#status, leaseId, leaseExpiresAt, report",
     ExpressionAttributeNames: { "#status": "status" },
@@ -107,8 +113,7 @@ async function claimGrading(
     await documentClient.send(new PutCommand({
       TableName: tableName,
       Item: {
-        PK: `SESSION#${sessionId}`,
-        SK: REPORT_SORT_KEY,
+        ...reportKey(sessionId),
         entityType: "EvidenceReport",
         status: "grading",
         leaseId,
@@ -164,6 +169,65 @@ function boundedEvidence(events: InterviewEvent[]): InterviewEvent[] {
   return selected.reverse();
 }
 
+/**
+ * The report record is authoritative; the history item is a derived index used for
+ * listing sessions. A failed index update must never fail or repeat paid grading.
+ */
+async function recordHistoryOutcome(
+  tableName: string,
+  userId: string,
+  historySk: unknown,
+  outcome: HistoryOutcome,
+): Promise<void> {
+  if (typeof historySk !== "string" || !historySk.startsWith(HISTORY_SORT_PREFIX)) return;
+  try {
+    await documentClient.send(new UpdateCommand({
+      TableName: tableName,
+      Key: historyKey(userId, historySk),
+      UpdateExpression: outcome.status === "graded"
+        ? "SET #status = :status, overallScore = :score"
+        : "SET #status = :status",
+      ConditionExpression: "attribute_exists(PK)",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: outcome.status === "graded"
+        ? { ":status": "graded", ":score": outcome.overallScore }
+        : { ":status": "failed" },
+    }));
+  } catch {
+    // Intentionally ignored; see the function comment.
+  }
+}
+
+export function isFinalDeliveryAttempt(record: SqsRecord, maxReceiveCount: number): boolean {
+  const receiveCount = Number(record.attributes?.ApproximateReceiveCount);
+  return Number.isSafeInteger(receiveCount) && receiveCount >= maxReceiveCount;
+}
+
+async function markGradingFailed(message: GradingMessage, now: Date): Promise<void> {
+  const tableName = requiredEnvironment("TABLE_NAME");
+  try {
+    await documentClient.send(new PutCommand({
+      TableName: tableName,
+      Item: {
+        ...reportKey(message.sessionId),
+        entityType: "EvidenceReport",
+        status: "failed",
+        failedAt: now.toISOString(),
+        completionEventId: message.completionEventId,
+      },
+      ConditionExpression: "attribute_not_exists(PK) OR #status <> :complete",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: { ":complete": "complete" },
+    }));
+  } catch (error) {
+    if (error instanceof Error && error.name === "ConditionalCheckFailedException") return;
+    throw error;
+  }
+  const session = await getSession(tableName, message);
+  await recordHistoryOutcome(tableName, message.userId, session.historySk, { status: "failed" });
+  emitMetric("grading_failed", 1, "Count");
+}
+
 async function gradeMessage(message: GradingMessage): Promise<"success" | "idempotent_replay"> {
   const tableName = requiredEnvironment("TABLE_NAME");
   const leaseId = randomUUID();
@@ -201,8 +265,7 @@ async function gradeMessage(message: GradingMessage): Promise<"success" | "idemp
     await documentClient.send(new PutCommand({
       TableName: tableName,
       Item: {
-        PK: `SESSION#${message.sessionId}`,
-        SK: REPORT_SORT_KEY,
+        ...reportKey(message.sessionId),
         entityType: "EvidenceReport",
         status: "complete",
         rubricVersion: "p1-v1",
@@ -222,17 +285,23 @@ async function gradeMessage(message: GradingMessage): Promise<"success" | "idemp
     }
     throw error;
   }
+  await recordHistoryOutcome(tableName, message.userId, session.historySk, {
+    status: "graded",
+    overallScore: overallScore(report),
+  });
   return "success";
 }
 
 export async function handler(event: SqsEvent): Promise<BatchResponse> {
+  const maxReceiveCount = positiveIntegerEnvironment("GRADING_MAX_RECEIVE_COUNT", DEFAULT_MAX_RECEIVE_COUNT);
   const failures: BatchResponse["batchItemFailures"] = [];
   for (const record of event.Records) {
     const startedAt = Date.now();
     let sessionRef: string | undefined;
+    let message: GradingMessage | undefined;
     try {
       const parsedBody = JSON.parse(record.body) as unknown;
-      const message = gradingMessageSchema.parse(parsedBody);
+      message = gradingMessageSchema.parse(parsedBody);
       sessionRef = hashReference(message.sessionId);
       const result = await gradeMessage(message);
       const durationMs = Date.now() - startedAt;
@@ -260,6 +329,13 @@ export async function handler(event: SqsEvent): Promise<BatchResponse> {
         sessionRef,
         durationMs: Date.now() - startedAt,
       });
+      if (message && isFinalDeliveryAttempt(record, maxReceiveCount)) {
+        try {
+          await markGradingFailed(message, new Date());
+        } catch {
+          // The DLQ alarm still surfaces this message.
+        }
+      }
       failures.push({ itemIdentifier: record.messageId });
     }
   }
