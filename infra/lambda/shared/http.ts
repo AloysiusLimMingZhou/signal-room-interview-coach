@@ -1,7 +1,12 @@
+import { parseRoleFromGroupsClaim, type AccessRole } from "../../lib/access-policy";
+
 export interface ApiGatewayV2Event {
   body?: string | null;
   headers?: Record<string, string | undefined>;
   isBase64Encoded?: boolean;
+  routeKey?: string;
+  pathParameters?: Record<string, string | undefined>;
+  queryStringParameters?: Record<string, string | undefined>;
   requestContext: {
     requestId: string;
     authorizer?: {
@@ -95,6 +100,11 @@ export function authenticatedUserId(event: ApiGatewayV2Event): string {
     throw new SafeHttpError(401, "unauthorized", "A valid signed-in session is required.");
   }
   return value;
+}
+
+/** Access tier from the Cognito-signed access token; fails closed to "none". */
+export function authenticatedRole(event: ApiGatewayV2Event): AccessRole {
+  return parseRoleFromGroupsClaim(event.requestContext.authorizer?.jwt?.claims?.["cognito:groups"]);
 }
 
 export function idempotencyKey(event: ApiGatewayV2Event): string {
