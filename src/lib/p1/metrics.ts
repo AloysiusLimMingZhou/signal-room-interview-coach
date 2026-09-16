@@ -11,6 +11,8 @@ export const metricNameSchema = z.enum([
   "grading_schema_failure",
   "evidence_reference_invalid",
   "idempotency_conflict",
+  "session_setup_failed",
+  "grading_failed",
 ]);
 
 export const metricDimensionsSchema = z

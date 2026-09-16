@@ -44,7 +44,7 @@ function apiEvent(): ApiGatewayV2Event {
 describe("session credential idempotency", () => {
   beforeEach(() => {
     process.env.TABLE_NAME = "sessions";
-    process.env.GEMINI_SECRET_ARN = "arn:aws:secretsmanager:ap-southeast-1:111111111111:secret:test";
+    process.env.GEMINI_KEY_PARAMETER_NAME = "/signal-room/test/gemini-api-key";
     mockDocumentSend.mockReset();
     mockLoadGeminiApiKey.mockReset();
     mockProvisionGeminiToken.mockReset();

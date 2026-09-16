@@ -23,6 +23,13 @@ function event(overrides: Partial<ApiGatewayV2Event> = {}): ApiGatewayV2Event {
 }
 
 describe("P1 HTTP and log safety", () => {
+  const originalEnvironment = process.env.ENVIRONMENT;
+
+  afterEach(() => {
+    if (originalEnvironment === undefined) delete process.env.ENVIRONMENT;
+    else process.env.ENVIRONMENT = originalEnvironment;
+  });
+
   it("requires signed identity and a bounded idempotency key", () => {
     expect(authenticatedUserId(event())).toBe("user-1234");
     expect(idempotencyKey(event())).toBe("request-1234");
@@ -91,6 +98,7 @@ describe("P1 HTTP and log safety", () => {
   });
 
   it("writes EMF with _aws at the stdout document root", () => {
+    process.env.ENVIRONMENT = "prod";
     let emitted = "";
     const stdout = jest.spyOn(process.stdout, "write").mockImplementation((chunk) => {
       emitted += String(chunk);
