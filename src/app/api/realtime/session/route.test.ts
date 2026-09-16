@@ -1,5 +1,7 @@
 /** @jest-environment node */
 
+jest.mock("@/lib/server/cognito-auth", () => ({ getAccessToken: jest.fn() }));
+import { getAccessToken } from "@/lib/server/cognito-auth";
 import { localInterviewModeAllowed, POST } from "./route";
 
 describe("POST /api/realtime/session", () => {
@@ -107,5 +109,21 @@ describe("POST /api/realtime/session", () => {
       maxDurationMinutes: 10,
       persistence: "local",
     });
+  });
+
+  it("tells a signed-in account without a group that access is invite-only", async () => {
+    process.env.P1_API_URL = "https://api.example.com";
+    (getAccessToken as jest.Mock).mockResolvedValue("access-token");
+    jest.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ error: "account_not_enabled" }, { status: 403 }),
+    );
+    const response = await POST(request({
+      track: "algorithms",
+      difficulty: "mid",
+      providerPreference: "gemini",
+      durationMinutes: 10,
+    }));
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: "account_not_enabled" });
   });
 });
