@@ -102,6 +102,36 @@ describe("session creation", () => {
     expect(mockDocumentSend).not.toHaveBeenCalled();
   });
 
+  it("rejects oversized group claims before reading or spending quota", async () => {
+    const response = await handler(apiEvent(`[owner ${"x".repeat(1_024)}]`));
+    expect(response.statusCode).toBe(403);
+    expect(mockDocumentSend).not.toHaveBeenCalled();
+    expect(mockProvisionGeminiToken).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("deduplicates a raced reservation, stored response=%s", async (ready) => {
+    const raced = { createdAt: new Date().toISOString(), requestHash: canonicalHash, sessionId };
+    const stored = {
+      requestHash: canonicalHash, sessionId, token: "authTokens/raced-credential",
+      model: "gemini-3.1-flash-live-preview",
+      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(), durationMinutes: 10,
+    };
+    mockDocumentSend
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ Item: { used: 0 } })
+      .mockResolvedValueOnce({ Item: { used: 0 } })
+      .mockRejectedValueOnce(Object.assign(new Error("Raced"), { name: "TransactionCanceledException" }))
+      .mockResolvedValueOnce({ Item: raced })
+      .mockResolvedValueOnce(ready ? { Item: stored } : {});
+    const response = await handler(apiEvent("[owner]"));
+    expect(response.statusCode).toBe(ready ? 200 : 409);
+    expect(JSON.parse(response.body)).toMatchObject(ready
+      ? { sessionId, token: stored.token }
+      : { error: "session_request_pending" });
+    expect(mockLoadGeminiApiKey).not.toHaveBeenCalled();
+    expect(mockProvisionGeminiToken).not.toHaveBeenCalled();
+  });
+
   it("reserves voice quota and writes the history item in the session transaction", async () => {
     mockDocumentSend.mockResolvedValue({});
     provisionSucceeds();
@@ -117,6 +147,20 @@ describe("session creation", () => {
     expect(items[1].Update.ExpressionAttributeValues[":limit"]).toBe(10);
     const meta = items[3].Put.Item;
     const history = items[4].Put.Item;
+    expect(items[2].Put).toMatchObject({
+      Item: { PK: `USER#${userId}`, SK: "SESSION_REQUEST#request-1234", requestHash: canonicalHash, sessionId: meta.sessionId },
+      ConditionExpression: "attribute_not_exists(PK) AND attribute_not_exists(SK)",
+    });
+    const provisioned = mockDocumentSend.mock.calls[4][0].input.TransactItems;
+    expect(provisioned[0].Update).toMatchObject({
+      Key: { PK: `SESSION#${meta.sessionId}`, SK: "META" },
+      ConditionExpression: "userId = :userId AND #status = :provisioning",
+      ExpressionAttributeValues: { ":userId": userId, ":provisioning": "provisioning", ":ready": "created" },
+    });
+    expect(provisioned[1].Put).toMatchObject({
+      Item: { PK: `USER#${userId}`, SK: "SESSION_RESPONSE#request-1234", sessionId: meta.sessionId, requestHash: canonicalHash },
+      ConditionExpression: "attribute_not_exists(PK) AND attribute_not_exists(SK)",
+    });
     expect(meta).toMatchObject({ role: "owner", channel: "voice" });
     expect(history).toMatchObject({
       PK: `USER#${userId}`,

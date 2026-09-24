@@ -37,6 +37,7 @@ describe("allowance limits", () => {
 
   it("rejects zero, negative, and fractional limits", () => {
     expect(() => validateAllowanceLimits(limits({ voice: { guest: 0 } }))).toThrow(/positive integer/);
+    expect(() => validateAllowanceLimits(limits({ voice: { guest: -1 } }))).toThrow(/positive integer/);
     expect(() => validateAllowanceLimits(limits({ text: { owner: 1.5 } }))).toThrow(/positive integer/);
   });
 

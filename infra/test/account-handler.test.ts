@@ -134,6 +134,20 @@ describe("GET /v1/sessions", () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "not+base64/url=",
+    "x".repeat(1_025),
+    Buffer.from("not JSON").toString("base64url"),
+    Buffer.from("[]").toString("base64url"),
+    Buffer.from(JSON.stringify({ PK: `USER#${userId}`, SK: historySk, extra: "forged" })).toString("base64url"),
+    Buffer.from(JSON.stringify({ PK: `USER#${userId}`, SK: "SESSION_REQUEST#key" })).toString("base64url"),
+    Buffer.from(JSON.stringify({ PK: `USER#${userId}`, SK: `SESSION#${"x".repeat(256)}` })).toString("base64url"),
+  ])("rejects malformed cursors before querying: %s", async (cursor) => {
+    const response = await handler(event("GET /v1/sessions", { queryStringParameters: { cursor } }, "[owner]"));
+    expect(response.statusCode).toBe(400);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it.each(["0", "51", "1.5", "abc"])("rejects limit=%s", async (limit) => {
     const response = await handler(event("GET /v1/sessions", { queryStringParameters: { limit } }, "[owner]"));
     expect(response.statusCode).toBe(400);
@@ -153,6 +167,25 @@ describe("GET /v1/sessions/{sessionId}/report", () => {
     const response = await handler(event(reportRoute, { pathParameters: { sessionId } }, "[owner]"));
     expect(response.statusCode).toBe(404);
     expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes missing and foreign sessions indistinguishable without reading either report", async () => {
+    tableWith(undefined, undefined);
+    const missing = await handler(event(reportRoute, { pathParameters: { sessionId } }, "[owner]"));
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    mockSend.mockClear();
+    tableWith({ userId: "someone-else" }, undefined);
+    const foreign = await handler(event(reportRoute, { pathParameters: { sessionId } }, "[owner]"));
+    expect(foreign).toEqual(missing);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed for a corrupt stored report without exposing its contents", async () => {
+    tableWith({ userId }, { status: "complete", report: { summary: "private corrupt content", scores: [] } });
+    const response = await handler(event(reportRoute, { pathParameters: { sessionId } }, "[owner]"));
+    expect(response.statusCode).toBe(500);
+    expect(body(response).error).toBe("internal_error");
+    expect(response.body).not.toContain("private corrupt content");
   });
 
   it("rejects a malformed session id without reading the table", async () => {

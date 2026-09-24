@@ -6,7 +6,7 @@ import {
 import { authenticatedRole, type ApiGatewayV2Event } from "../lambda/shared/http";
 import { historyKey, historySortKey, reportKey, sessionMetaKey } from "../lambda/shared/table-keys";
 
-const ENV_NAMES = ["VOICE_GLOBAL_MONTHLY_LIMIT", "VOICE_GUEST_MONTHLY_LIMIT", "VOICE_SESSION_MINUTES"] as const;
+const ENV_NAMES = ["VOICE_GLOBAL_MONTHLY_LIMIT", "VOICE_GUEST_MONTHLY_LIMIT", "VOICE_SESSION_MINUTES", "TEXT_GLOBAL_MONTHLY_LIMIT"] as const;
 const saved = Object.fromEntries(ENV_NAMES.map((name) => [name, process.env[name]]));
 
 afterEach(() => {
@@ -33,6 +33,10 @@ describe("authenticated role", () => {
     expect(authenticatedRole(eventWithGroups("[guest owner]"))).toBe("owner");
   });
 
+  it("rejects oversized signed group strings at the Lambda boundary", () => {
+    expect(authenticatedRole(eventWithGroups(`[owner ${"x".repeat(1_024)}]`))).toBe("none");
+  });
+
   it("treats a missing claim as none", () => {
     expect(authenticatedRole(eventWithGroups())).toBe("none");
   });
@@ -43,6 +47,11 @@ describe("allowances from the Lambda environment", () => {
     delete process.env.VOICE_GLOBAL_MONTHLY_LIMIT;
     process.env.VOICE_GUEST_MONTHLY_LIMIT = "1";
     expect(allowanceLimitsFromEnvironment().voice).toEqual({ global: 10, owner: 10, guest: 1 });
+  });
+
+  it("enforces the text hard cap at the Lambda boundary", () => {
+    process.env.TEXT_GLOBAL_MONTHLY_LIMIT = "61";
+    expect(() => allowanceLimitsFromEnvironment()).toThrow(/hard cap of 60/);
   });
 
   it("fails closed when configuration exceeds the hard caps", () => {
