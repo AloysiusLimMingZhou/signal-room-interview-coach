@@ -1,5 +1,10 @@
 import { HARD_LIMITS, readAllowanceLimits, type AllowanceLimits } from "../../lib/access-policy";
 import { positiveIntegerEnvironment } from "./aws-clients";
+import { readTextLimits, type TextLimits } from "../../lib/text-limits";
+
+export function textLimitsFromEnvironment(): TextLimits {
+  return readTextLimits(positiveIntegerEnvironment);
+}
 
 export function allowanceLimitsFromEnvironment(): AllowanceLimits {
   return readAllowanceLimits(positiveIntegerEnvironment);

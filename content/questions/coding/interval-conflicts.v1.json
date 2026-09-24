@@ -1,0 +1,106 @@
+{
+  "id": "coding.interval-conflicts.v1",
+  "track": "coding",
+  "levels": [
+    "new-grad",
+    "mid",
+    "senior"
+  ],
+  "title": "Detect conflicting reservations",
+  "prompt": "Each reservation is a pair [start, end] with start < end. Endpoints are integers, and the end is exclusive: [1, 3] and [3, 5] do not conflict. Return whether any two reservations overlap. For [[5, 8], [1, 3], [2, 4]], return true. The input may be empty or unsorted. Explain whether your solution changes the input.",
+  "starterCode": {
+    "python": "def has_conflict(reservations: list[list[int]]) -> bool:\n    pass\n",
+    "javascript": "function hasConflict(reservations) {\n  // Each entry is [start, end].\n}\n",
+    "typescript": "function hasConflict(reservations: [number, number][]): boolean {\n  return false;\n}\n",
+    "java": "import java.util.*;\n\nclass Solution {\n    public boolean hasConflict(int[][] reservations) {\n        return false;\n    }\n}\n",
+    "cpp": "#include <vector>\nusing namespace std;\n\nbool hasConflict(vector<vector<int>> reservations) {\n    return false;\n}\n"
+  },
+  "followUps": [
+    "How do you handle reservations with identical start times?",
+    "Why is checking your chosen neighboring intervals sufficient?",
+    "Which boundary cases should the tests cover?"
+  ],
+  "twist": {
+    "kind": "follow-up-constraint",
+    "prompt": "Reservations now arrive one at a time, and you must reject a conflicting reservation before storing it. Describe the data structure you would use."
+  },
+  "hints": [
+    "A simple pairwise comparison is a useful starting point.",
+    "Consider what ordering makes a potential conflict nearby.",
+    "Be explicit about whether equal end and start times overlap."
+  ],
+  "rubric": [
+    {
+      "competencyId": "problem-solving",
+      "name": "Problem solving",
+      "anchors": {
+        "new-grad": {
+          "strong": "Clarifies the task and explains a workable approach; with reasonable prompts, detects overlap while respecting exclusive endpoints.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently clarifies the task and explains a workable approach; detects overlap while respecting exclusive endpoints, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively clarifies the task and explains a workable approach; detects overlap while respecting exclusive endpoints, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "correctness",
+      "name": "Correctness",
+      "anchors": {
+        "new-grad": {
+          "strong": "Checks examples and boundaries; with reasonable prompts, detects overlap while respecting exclusive endpoints.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently checks examples and boundaries; detects overlap while respecting exclusive endpoints, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively checks examples and boundaries; detects overlap while respecting exclusive endpoints, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "complexity",
+      "name": "Complexity and trade-offs",
+      "anchors": {
+        "new-grad": {
+          "strong": "Explains time and space costs; with reasonable prompts, detects overlap while respecting exclusive endpoints.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently explains time and space costs; detects overlap while respecting exclusive endpoints, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively explains time and space costs; detects overlap while respecting exclusive endpoints, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "communication",
+      "name": "Communication",
+      "anchors": {
+        "new-grad": {
+          "strong": "Explains decisions and responds to probes; with reasonable prompts, detects overlap while respecting exclusive endpoints.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently explains decisions and responds to probes; detects overlap while respecting exclusive endpoints, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively explains decisions and responds to probes; detects overlap while respecting exclusive endpoints, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    }
+  ]
+}

@@ -1,6 +1,9 @@
 import { GetParameterCommand } from "@aws-sdk/client-ssm";
 import { gradingReportSchema, type GradingReport, type SessionRequest } from "./contracts";
 import { requiredEnvironment, ssmClient } from "./aws-clients";
+import type { SessionRequestV2 } from "../../../src/lib/p1/session-v2";
+import type { QuestionDefinition } from "../../../src/lib/questions/schema";
+import { buildInterviewerInstruction, interviewerTools } from "./interviewer";
 
 const TOKEN_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/auth_tokens";
 const DEFAULT_LIVE_MODEL = "gemini-3.1-flash-live-preview";
@@ -82,12 +85,20 @@ function systemInstruction(request: SessionRequest): string {
 
 export async function provisionGeminiToken(
   apiKey: string,
-  request: SessionRequest,
+  request: SessionRequest | SessionRequestV2,
   now = new Date(),
   credentialLifetimeMinutes = 12,
+  question?: QuestionDefinition,
 ): Promise<ProvisionedToken> {
+  const isV2 = "channel" in request;
+  if (isV2 && (request.channel !== "voice" || !question || question.track !== request.track || !question.levels.includes(request.level))) {
+    throw new Error("Gemini Live credentials require a matching voice question.");
+  }
+  const instruction = isV2
+    ? buildInterviewerInstruction({ question: question!, level: request.level, channel: "voice", language: request.track === "coding" ? request.language : undefined })
+    : systemInstruction(request);
   const model = resolvedGeminiLiveModel();
-  const boundedLifetime = Math.max(2, Math.min(60, credentialLifetimeMinutes));
+  const boundedLifetime = Math.max(2, Math.min(12, credentialLifetimeMinutes));
   const expiresAt = new Date(now.getTime() + boundedLifetime * 60 * 1_000).toISOString();
   const newSessionExpiresAt = new Date(now.getTime() + 60 * 1_000).toISOString();
 
@@ -107,7 +118,8 @@ export async function provisionGeminiToken(
           model: `models/${model}`,
           config: {
             responseModalities: ["AUDIO"],
-            systemInstruction: { parts: [{ text: systemInstruction(request) }] },
+            systemInstruction: { parts: [{ text: instruction }] },
+            ...(isV2 && request.track === "coding" ? { tools: [{ functionDeclarations: interviewerTools("coding") }] } : {}),
             inputAudioTranscription: {},
             outputAudioTranscription: {},
             sessionResumption: {},

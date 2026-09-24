@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { codeLanguageSchema, questionIdSchema } from "../questions/schema";
+import { TEXT_MAX_SESSION_MINUTES } from "./session-v2";
 
 export const PILOT_MAX_INTERVIEW_MINUTES = 10;
 // Keeps DynamoDB transactional writes below 100 items when each event also
@@ -48,7 +50,7 @@ export const sessionCreationResponseSchema = z
 
 const questionPayloadSchema = z
   .object({
-    questionId: uuid,
+    questionId: z.union([uuid, questionIdSchema]),
     turn: z.number().int().min(1).max(1_000),
     prompt: z.string().trim().min(1).max(8_000),
   })
@@ -70,7 +72,7 @@ const transcriptPayloadSchema = z
 
 const codePatchPayloadSchema = z
   .object({
-    language: z.enum(["javascript", "typescript", "python"]),
+    language: codeLanguageSchema,
     patch: z.string().min(1).max(65_536),
     baseRevision: sequence,
     revision: sequence,
@@ -115,7 +117,7 @@ const canvasPatchPayloadSchema = z
 
 const codeSnapshotPayloadSchema = z
   .object({
-    language: z.enum(["javascript", "typescript", "python"]),
+    language: codeLanguageSchema,
     content: z.string().max(98_304),
     revision: sequence,
     evidenceId: boundedIdentifier,
@@ -153,7 +155,7 @@ const canvasSnapshotPayloadSchema = z
 const scenarioInjectedPayloadSchema = z
   .object({
     scenarioId: boundedIdentifier,
-    kind: z.enum(["traffic-spike", "component-failure", "privacy-constraint", "model-drift"]),
+    kind: z.enum(["traffic-spike", "component-failure", "privacy-constraint", "model-drift", "follow-up-constraint", "behavioral-probe"]),
     title: z.string().trim().min(1).max(160),
     prompt: z.string().trim().min(1).max(4_000),
     injectedAtTurn: z.number().int().min(1).max(1_000),
@@ -162,8 +164,9 @@ const scenarioInjectedPayloadSchema = z
 
 const interviewCompletedPayloadSchema = z
   .object({
-    reason: z.enum(["user-ended", "time-limit", "interviewer-ended"]),
-    durationMs: z.number().int().nonnegative().max(PILOT_MAX_INTERVIEW_MINUTES * 60 * 1_000),
+    reason: z.enum(["user-ended", "time-limit", "interviewer-ended", "connection-lost"]),
+    // The append service additionally enforces the session's stored duration.
+    durationMs: z.number().int().nonnegative().max(TEXT_MAX_SESSION_MINUTES * 60 * 1_000),
     finalSequence: sequence,
     evidenceSnapshotHash: z.string().regex(/^[a-f0-9]{64}$/),
     gradingRequested: z.boolean(),
@@ -172,7 +175,7 @@ const interviewCompletedPayloadSchema = z
 
 const executionResultPayloadSchema = z
   .object({
-    language: z.enum(["javascript", "typescript", "python"]),
+    language: codeLanguageSchema,
     exitCode: z.number().int().min(-1).max(255),
     stdout: z.string().max(16_384),
     stderr: z.string().max(16_384),

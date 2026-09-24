@@ -13,6 +13,7 @@ describe("P1 deployment configuration", () => {
         text: { global: 60, owner: 60, guest: 5 },
       },
       voiceSessionMinutes: 10,
+      textLimits: { sessionMinutes: 30, maxTurns: 40, maxTurnChars: 4_000 },
       alertEmail: undefined,
     });
   });
