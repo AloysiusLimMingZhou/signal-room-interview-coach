@@ -2,75 +2,81 @@
 
 [![CI](https://github.com/AloysiusLimMingZhou/signal-room-interview-coach/actions/workflows/ci.yml/badge.svg)](https://github.com/AloysiusLimMingZhou/signal-room-interview-coach/actions/workflows/ci.yml)
 
-Signal Room is a Gemini-first web app for practicing system-design, ML-design, and algorithm interviews. It treats transcript, code, and architecture artifacts as evidence, then creates a scorecard tied to that evidence.
+Signal Room is a Gemini-first interview practice app. Transcript, code, and architecture artifacts become evidence for independent grading. The local P0 prototype runs without keys or cloud accounts; v2 Phase 1 adds an invite-only pilot on Vercel and a lean AWS backend in Singapore.
 
-The deterministic P0 prototype runs locally with no key or cloud account. The P1 indie-pilot code adds Cognito authentication, a Next.js BFF, a hard 10-interview × 10-minute monthly limit, DynamoDB evidence, asynchronous Gemini grading, CloudWatch operations, and guarded GitHub deployments. P1 is implemented and locally verified but has not been deployed to AWS or Vercel.
+**Deployment state:** implemented and tested locally/through GitHub Actions; the owner-run first deployment checkpoint is still outstanding. The browser currently shows a deterministic scorecard. The stored Gemini report is available through the authenticated API; report/history UI and the real question-aware interview loop ship in Phase 2.
 
-## Source of truth
-
-[architecture.md](./architecture.md) is authoritative for product scope, provider boundaries, data contracts, privacy, costs, testing, and deployment. Architecture changes must update it and the related tests in the same pull request.
+[architecture.md](./architecture.md) is the source of truth for boundaries, contracts, security, costs, and deployment. The [v2 spec](./docs/superpowers/specs/2026-09-15-signal-room-v2-design.md) and [Phase 1 plan](./docs/superpowers/plans/2026-09-16-signal-room-v2-phase1.md) describe the roadmap and checkpoint.
 
 ## What works
 
-- System-design, ML-design, and algorithm tracks at mid, senior, and staff difficulty.
-- XState interview lifecycle with deterministic mock and Gemini adapters.
-- Monaco code workbench and structured design canvas.
-- Dynamic scenario injection and an evidence-linked local scorecard.
-- Direct browser-to-Gemini audio: 16 kHz PCM input and 24 kHz output.
-- OAuth code + PKCE through Cognito, with the access token kept in a scoped HttpOnly cookie.
-- Strict, retry-safe evidence batches for transcript, code, canvas, scenarios, usage, and completion.
-- Atomic global/per-user monthly quotas and idempotent session creation.
-- SQS independent grader with an evidence schema and DynamoDB grading lease; its stored Gemini report is not yet read by the browser.
-- CloudWatch JSON logs, EMF metrics, dashboard, baseline alarms, X-Ray, and production Lambda canaries.
-- Nonce CSP, security headers, exact-origin checks, bounded JSON, safe errors, and log redaction.
+- System-design, ML-design, and algorithm tracks at mid/senior/staff difficulty; XState lifecycle, Monaco workbench, and structured design canvas.
+- Deterministic mock mode and Gemini Live adapters; 16 kHz input and 24 kHz output audio directly between browser and Gemini.
+- Cognito code + PKCE authentication; access tokens stay in an HttpOnly cookie scoped to `/api`.
+- Invite-only `owner`/`guest` groups with no self sign-up. An ungrouped account cannot create sessions (`403 account_not_enabled`).
+- Atomic voice quotas, retry-safe session creation, and append-only evidence batches.
+- Per-channel allowance configuration: voice global ≤10/month (owner 10, guest 2), text global ≤60/month (owner 60, guest 5). Actual text interviews arrive in Phase 2.
+- SQS grading with a DynamoDB lease, terminal failure handling, and derived session history.
+- Authenticated account, history, and stored-report reads, with ownership checks and validated BFF responses.
+- SSM SecureString key storage with a five-minute cache; production-only alarms, dashboard, custom metrics, SNS email, and a $1 AWS budget.
+- Nonce CSP, exact-origin checks, bounded input, safe error bodies, and content-free operational logs.
 
 ## Architecture
 
 ~~~mermaid
 flowchart LR
-  Browser[Candidate browser] --> BFF[Next.js BFF on Vercel]
-  BFF <-->|OAuth code + PKCE| Cognito[AWS Cognito]
-  BFF -->|HttpOnly access token| API[API Gateway]
+  Browser[Candidate browser] --> BFF[Next.js 16 BFF on Vercel]
+  BFF <-->|code + PKCE| Cognito[Cognito owner/guest groups]
+  BFF --> API[HTTP API + JWT authorizer]
   API --> Session[Session Lambda]
   API --> Events[Event Lambda]
-  Session --> DDB[(DynamoDB)]
-  Session --> Secret[Secrets Manager]
+  API --> Account[Account Lambda]
+  Session --> DB[(DynamoDB)]
+  Events --> DB
+  Account --> DB
+  Session --> Key[SSM SecureString]
   Session --> Token[Gemini token service]
   Token --> Browser
   Browser <-->|direct audio WebSocket| Live[Gemini Live]
-  Events --> DDB
   Events --> Queue[SQS + DLQ]
   Queue --> Grader[Grader Lambda]
+  Grader --> Key
   Grader --> Grade[Gemini text grader]
-  Grader --> DDB
-  API --> CW[CloudWatch + X-Ray]
+  Grader --> DB
 ~~~
 
-Audio does not traverse API Gateway or Lambda.
+Audio never passes through AWS. A standard Gemini key never reaches the browser or a `NEXT_PUBLIC_*` variable. All AWS resources are pinned to `ap-southeast-1`.
 
-## Run P0 locally
+## Run locally
 
-Requirements: Node.js 22 and pnpm 11.19.
+Use Node.js 22 and **pnpm 11.19.0 exactly**:
 
 ~~~bash
-pnpm install
+pnpm --version
+pnpm install --frozen-lockfile
 pnpm dev
 ~~~
 
-Open http://localhost:3000. With no .env.local, the app uses mock mode and never requests microphone access or calls Gemini.
+Open `http://localhost:3000`. Without `.env.local`, the app uses mock mode and does not request microphone access or call Gemini. A failed frozen install must be investigated; do not regenerate the lockfile as a fallback.
 
-Optional local Gemini mode:
+Optional developer-only Live mode uses a server-only `GEMINI_API_KEY` in an ignored `.env.local`. Never expose that unauthenticated development path publicly. Production without `P1_API_URL` fails closed with 503.
 
-~~~dotenv
-GEMINI_API_KEY=your_server_only_key
-GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview
-~~~
+## Account API
 
-Never rename the key to a NEXT_PUBLIC_ variable. Do not expose this unauthenticated local-key route on a public deployment.
+| BFF route | Purpose |
+|---|---|
+| `GET /api/me` | Signed-in role and voice/text allowances with UTC reset time |
+| `GET /api/sessions?limit=20&cursor=...` | Newest-first session history, maximum 50 items per page |
+| `GET /api/sessions/[id]/report` | `pending`, `grading`, `complete`, or `failed`; version 1 report when complete |
 
-## Test everything
+The AWS equivalents use `/v1/me`, `/v1/sessions`, and `/v1/sessions/{sessionId}/report`. Missing and other-user sessions return the same 404 before a report is read. Cursors are confined to the caller's history partition. Responses are strictly Zod-validated and non-cacheable. History is a derived index; the stored report remains authoritative.
+
+Set optional server-only `CONTACT_URL` to an HTTPS or mailto request-access destination. The sign-in screen omits the link when no valid value is configured. An ungrouped caller can inspect zero allowances but cannot start an interview.
+
+## Verification
 
 ~~~bash
+pnpm install --frozen-lockfile
 pnpm lint
 pnpm typecheck
 pnpm audit:deps
@@ -84,122 +90,95 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ~~~
 
-Jest and CDK assertions use no cloud credentials. The current suite contains 58 application tests, 23 infrastructure tests, and one Playwright candidate journey. Playwright stubs only the session-provisioning response, so it exercises the production UI without a model call or weakening the production fail-closed policy.
+Tests mock AWS/Gemini boundaries and incur no provider spend. The suite has **90 application tests**, **113 infrastructure tests**, and **one Chromium candidate journey**. The browser test stubs session provisioning and exercises the production UI. See the integration PR for the exact verified revision and GitHub Actions results.
 
-## Deploy the P1 application plane
+Regression coverage includes role/cap boundaries, raced session creation, cursor tampering, report ownership, corrupt reports, grading failures, best-effort history writes, read-only account permissions, exact CORS, SSM/KMS scope, and production monitoring. Real Cognito claims, audio behavior, deployed permissions, and billing remain manual checks.
 
-### 1. Bootstrap AWS once
+## First deployment checkpoint — owner only
 
-Authenticate an AWS CLI profile for the target account, then bootstrap Singapore:
+Run Task 16 after the integration PR is approved and merged into `main`. Agents do not create cloud resources or handle cloud credentials. Use the owner's normal AWS authentication outside this task.
 
-~~~bash
-pnpm exec cdk bootstrap aws://ACCOUNT_ID/ap-southeast-1
-~~~
+1. Bootstrap CDK once for the target account:
 
-The stack is intentionally pinned to ap-southeast-1.
+   ~~~bash
+   pnpm exec cdk bootstrap aws://ACCOUNT_ID/ap-southeast-1
+   ~~~
 
-### 2. Choose the final web origin
+2. Create the standard-tier SSM SecureString `/signal-room/dev/gemini-api-key` with the AWS-managed `aws/ssm` key, using the AWS console or the plan's POSIX-shell command below. Enter the key interactively in a shell without tracing or recording; do not commit it or place it in GitHub variables.
 
-Cognito callback URLs and API CORS use one exact origin. For production, choose the Vercel custom domain before deploying AWS, for example https://interviews.example.com.
+   ~~~bash
+   read -rs GEMINI_KEY
+   aws ssm put-parameter --region ap-southeast-1 --name /signal-room/dev/gemini-api-key --type SecureString --value "$GEMINI_KEY"
+   unset GEMINI_KEY
+   ~~~
 
-### 3. Test, synthesize, and deploy
+   CloudFormation does not create the SecureString value. Lambdas receive only `GEMINI_KEY_PARAMETER_NAME`, and permission to read that stage's parameter through SSM.
 
-PowerShell example for a local development origin:
+3. Deploy dev with one exact allowed origin. PowerShell example:
 
-~~~powershell
-$env:DEPLOY_STAGE = "dev"
-$env:P1_ALLOWED_ORIGIN = "http://localhost:3000"
-pnpm infra:test
-pnpm infra:synth --context stage=dev
-pnpm infra:deploy --context stage=dev
-~~~
+   ~~~powershell
+   $env:DEPLOY_STAGE = "dev"
+   $env:P1_ALLOWED_ORIGIN = "http://localhost:3000"
+   pnpm infra:deploy --context stage=dev
+   ~~~
 
-The stack outputs ApiUrl, UserPoolId, UserPoolClientId, CognitoDomain, GeminiSecretArn, ArtifactsBucketName, and DashboardName.
+   Outputs: `ApiUrl`, `UserPoolId`, `UserPoolClientId`, `CognitoDomain`, and `GeminiKeyParameterName`. Production additionally outputs `DashboardName`.
 
-By default CDK creates a Secrets Manager secret containing a random placeholder. Replace that value in the AWS console with the Gemini key before starting a real interview. To reuse an existing secret, set GEMINI_SECRET_ARN before synthesis/deployment. Never paste a production key into source, CloudFormation parameters, GitHub variables, or shell history.
+4. Invite the owner (Cognito emails a temporary password):
 
-### 4. Configure the web BFF
+   ~~~powershell
+   ./scripts/invite-user.ps1 -UserPoolId <UserPoolId> -Email <your-email> -Group owner
+   ~~~
 
-Map stack outputs into server-only web environment variables:
+   POSIX equivalent: `./scripts/invite-user.sh <UserPoolId> <your-email> owner`.
 
-~~~dotenv
-P1_API_URL=https://the-api-id.execute-api.ap-southeast-1.amazonaws.com
-APP_ORIGIN=https://your-final-web-origin.example
-COGNITO_CLIENT_ID=the-UserPoolClientId-output
-COGNITO_DOMAIN=https://the-CognitoDomain-output
-~~~
+5. Configure the ignored local BFF environment, start the app, sign in, and set a permanent password:
 
-Do not configure GEMINI_API_KEY on the P1 Vercel project. When P1_API_URL is unset, development and test deliberately fall back to the local P0 path. Production fails closed with a 503 response instead of exposing an unauthenticated mock or Gemini route.
+   ~~~dotenv
+   P1_API_URL=https://the-api-id.execute-api.ap-southeast-1.amazonaws.com
+   APP_ORIGIN=http://localhost:3000
+   COGNITO_CLIENT_ID=the-UserPoolClientId-output
+   COGNITO_DOMAIN=https://the-CognitoDomain-output
+   ~~~
 
-For a local BFF against a deployed development stack, use APP_ORIGIN=http://localhost:3000 and ensure the stack was deployed with that same allowed origin.
+   Do not configure a standard Gemini key on the P1 Vercel project. The BFF only receives constrained ephemeral credentials from AWS.
+
+6. Check `/api/me` returns `owner` (verification V4). Complete a real voice interview, then use `/api/sessions` and `/api/sessions/<id>/report` to confirm a complete report and graded history. Record setup/grading latency. Verify a guest's third voice session is rejected and an ungrouped account gets the invite-only 403. Use dev for these quota tests.
+
+7. Create the prod SecureString, configure the production environment below, deploy AWS first, confirm the SNS email subscription, and then deploy Vercel with the exact production origin. Verify all five API routes require authentication and the account/report flow works.
+
+8. Configure a Google billing budget with $3/$5 alerts and restrict the key to the Generative Language API. Verify the $1 AWS Budget and alarm delivery. Record results and outstanding probes in an architecture decision-log PR; do not record keys, tokens, or interview content.
+
+V1–V3 (Live resumption uses, tool support, and control-event behavior), V5 (current prices), and V6 (browser capture sample rate) must be resolved before Phase 2 depends on them. Tests do not answer these live integration questions.
 
 ## GitHub CI/CD
 
-CI has separate app-quality, infrastructure, and browser jobs. It performs a frozen lockfile install, fails on moderate-or-higher vulnerabilities across production and build dependencies, and enforces a one-day package release-age gate with exact reviewed exceptions recorded for the pinned Vercel CLI dependency set. CodeQL, dependency review, and Dependabot run alongside it. Third-party actions are pinned to immutable commit SHAs.
+The `quality`, `infrastructure`, and `browser` jobs must all pass before every lane merge. The dependency audit includes development tooling and rejects moderate-or-higher vulnerabilities; release-age controls and immutable action pins remain enabled. The audit fix upgrades js-yaml/smol-toml across vulnerable paths without bypassing the gate. Dependency review, CodeQL, and Dependabot supplement CI.
 
-### AWS environments
+Only two GitHub environments are used: **development** and **production**, mapping to CDK dev/prod. Configure:
 
-Create GitHub environments named development, staging, and production. Configure:
+- `AWS_DEPLOY_ROLE_ARN`, `AWS_REGION=ap-southeast-1`, and exact `P1_ALLOWED_ORIGIN` as environment variables.
+- Monthly allowance variables: `VOICE_GLOBAL_MONTHLY_LIMIT=10`, `VOICE_OWNER_MONTHLY_LIMIT=10`, `VOICE_GUEST_MONTHLY_LIMIT=2`, `TEXT_GLOBAL_MONTHLY_LIMIT=60`, `TEXT_OWNER_MONTHLY_LIMIT=60`, `TEXT_GUEST_MONTHLY_LIMIT=5`.
+- `VOICE_SESSION_MINUTES=10`; limits can be lowered but cannot exceed the documented hard caps.
+- Production secret `ALERT_EMAIL`, used for both the AWS Budget and SNS subscription.
+- Optional `P1_HEALTHCHECK_URL` and `P1_SMOKE_PATH`.
 
-- P1_AWS_DEPLOY_ENABLED=true as a repository variable only after the development environment is fully configured; leaving it unset keeps automatic AWS deploys dormant.
-- AWS_DEPLOY_ROLE_ARN: environment variable for the least-privilege GitHub OIDC role.
-- AWS_REGION=ap-southeast-1.
-- P1_ALLOWED_ORIGIN: exact web origin for that environment.
-- GEMINI_SECRET_ARN: optional existing secret ARN.
-- GLOBAL_MONTHLY_INTERVIEW_LIMIT=10.
-- USER_MONTHLY_INTERVIEW_LIMIT=10 or lower.
-- SESSION_DURATION_MINUTES=10 or lower.
-- P1_HEALTHCHECK_URL and P1_SMOKE_PATH: optional smoke-test overrides.
+Leave repository variable `P1_AWS_DEPLOY_ENABLED` unset until the owner configures development. Setting it to `true` enables dev deployment after successful CI on trusted main pushes. Manual runs require successful CI on the selected revision; production requires push CI on that exact main revision and a reviewer-gated production environment. OIDC supplies temporary AWS credentials.
 
-deploy-p1-aws.yml automatically deploys development only when the repository variable P1_AWS_DEPLOY_ENABLED is exactly true and CI succeeds on a trusted main push. Manual runs remain available while the flag is unset, but fail closed until their selected environment is configured. Every manual stage requires successful CI for the selected revision; production requires push-triggered CI on that exact main revision. Staging and production are manual and environment-gated. No long-lived AWS access key is stored in GitHub.
+For Vercel, configure production variables `VERCEL_ORG_ID`/`VERCEL_PROJECT_ID` and secret `VERCEL_TOKEN`, plus the four BFF variables in the Vercel project. Run `deploy-vercel.yml` manually from main after the matching AWS deployment is healthy. It builds a candidate, verifies health/auth configuration, and promotes the exact artifact. Disable Vercel Git auto-deployments if this workflow is authoritative. Keep `/v1` backward compatible and deploy AWS before Vercel.
 
-After the first run of the new workflows, protect main against force-push/deletion and require the CI quality, infrastructure, browser, CodeQL, and dependency-review checks appropriate to the event. Add at least one required reviewer to the production environment and restrict it to main before configuring deployment credentials.
+## Cost and privacy limits
 
-### Vercel production
+The v2 spec estimates roughly **$3.35–5.65/month**, with a planning worst case around **$9.90** at the caps. These are estimates, not measured bills or a guaranteed dollar ceiling. Voice is expected to dominate; the text allowance is reserved for Phase 2. Verify current pricing and account-wide AWS free-tier usage at deployment.
 
-Configure the production GitHub environment:
+Production has eight single-metric alarms, one dashboard, and eight emitted custom metrics; four metric names are reserved and not emitted. Development emits no custom metrics and creates no alarms/dashboard/budget. The maximum is 10 alarm metrics and 10 emitted custom metric/dimension combinations per account.
 
-- VERCEL_ORG_ID and VERCEL_PROJECT_ID as variables.
-- VERCEL_TOKEN as a narrowly scoped secret.
+After the first month, lower the global voice cap if measured cost exceeds $0.40/session. Budgets notify; they do not stop spending. The browser stops at ten wall-clock minutes, with a provider credential ceiling of twelve minutes including reconnect margin. See [architecture.md](./architecture.md) for the cost table and boundaries.
 
-Configure P1_API_URL, APP_ORIGIN, COGNITO_CLIENT_ID, and COGNITO_DOMAIN in the Vercel production project. Run deploy-vercel.yml manually from main only after the matching AWS production deployment is healthy. The workflow verifies exact-revision CI, keeps the token scoped to CLI steps, deploys a candidate, checks health/P1 auth configuration, and promotes only the verified artifact.
-
-Disable Vercel Git auto-deployments if this workflow is authoritative. AWS Amplify remains a manual compatibility-gated fallback because its documented managed support currently stops at Next.js 15 while this project uses Next.js 16.
-
-## Current cost ceiling
-
-For ten 10-minute interviews per month:
-
-| Area | Monthly planning range |
-|---|---:|
-| Gemini Live, including context-rebilling headroom | $3–$6 |
-| Independent Gemini grading | < $0.25 |
-| AWS serverless application plane | about $2.50–$7 |
-| Eligible Vercel Hobby hosting | $0 |
-| **Expected total** | **about $5.75–$13.25** |
-
-The audio-only Gemini lower bound is about $0.73 for all ten interviews. The API key itself has no fee. CloudWatch alarms/custom metrics and Secrets Manager dominate the tiny AWS workload. Avoid WAF, Managed Grafana, Managed Prometheus, NAT Gateway, Aurora, and always-on containers for this $25/month pilot.
-
-The UI stops at ten wall-clock minutes, but the direct-to-Gemini credential remains valid for a two-minute reconnect margin. Since AWS is intentionally off the audio path, the provider-side hard upper bound is 12 minutes rather than exactly 10; budget alerts remain necessary.
-
-Pricing is a 2026-09-01 planning snapshot. Measured provider usage and actual bills are the source of truth; see [architecture.md](./architecture.md) for formulas and the future 1,000 × 45-minute scenario.
-
-## Privacy and launch limits
-
-- Audio is never uploaded by the current app.
-- P1 stores transcript/code/canvas evidence and reports in DynamoDB.
-- The S3 recordings/ lifecycle deletes current and noncurrent object versions after 30 days, but no consent/upload UI exists.
-- A user-facing export/delete workflow is still required before public production.
-- Operational logs reject interview content and credentials.
-- Public P1 also requires budget alerts, authenticated/provider E2E tests, reconnect recovery, coordinated rollback, abuse review, and load testing.
+Audio is not recorded or uploaded. Invited users' evidence and reports remain in DynamoDB until deletion; per-session deletion ships in Phase 2, and full account export remains deferred. Operational logs reject content and credentials. General public use requires further privacy, reconnect, abuse, and deployed reliability checks.
 
 ## Next steps
 
-1. Deploy a development stack, replace the placeholder secret, and run an authenticated synthetic session/event test.
-2. Add an authenticated report-read endpoint and poll it so the stored Gemini grading report replaces the immediate local scorecard.
-3. Finish GoAway/network/device recovery and persist Gemini resumption handles.
-4. Add user export/deletion and explicit retention/recording consent.
-5. Add authenticated Playwright tests and a 25-concurrent-session load test.
-6. Emit measured Gemini usage/cost, reconnect, provider-error, and abandonment metrics with budget alarms.
-7. Add an authenticated release smoke and coordinated AWS-to-Vercel production promotion/rollback.
-8. Add rewind/retry, longitudinal skill history, Excalidraw, and isolated browser workers for code execution.
+1. Complete the owner-run Task 16 deployment checkpoint and record actual results.
+2. Write the Phase 2 plan using those results: Coding/Behavioral question bank, shared interviewer, `view_code`, text channel, real report/history UI, and deletion.
+3. Add Phase 3 differentiators: grader evaluations, browser Python tests, delivery analytics, measured operational metrics, and a real-session demo replay.

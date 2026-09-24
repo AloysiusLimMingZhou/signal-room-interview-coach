@@ -9,7 +9,7 @@ import {
 
 const safeLogSchema = z.object({
   level: z.enum(["INFO", "WARN", "ERROR"]),
-  operation: z.enum(["session.create", "event.append", "grading.run"]),
+  operation: z.enum(["session.create", "event.append", "grading.run", "account.read"]),
   result: z.enum([
     "success",
     "invalid_request",
@@ -91,6 +91,9 @@ export function emitMetric(
   unit: "Milliseconds" | "Count" | "None",
   model?: string,
 ): void {
+  // CloudWatch's free tier allows 10 custom metrics per account; only prod emits them.
+  if (environment() !== "production") return;
+
   const dimensions = {
     environment: environment(),
     provider: name.startsWith("gemini_") ? "gemini" as const : "application" as const,

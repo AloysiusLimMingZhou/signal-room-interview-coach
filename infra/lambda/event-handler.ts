@@ -1,5 +1,5 @@
 import { SendMessageCommand } from "@aws-sdk/client-sqs";
-import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import { fingerprintInterviewEvent, validateIdempotentAppend } from "../../src/lib/p1/events";
 import {
   documentClient,
@@ -24,6 +24,7 @@ import {
   type ApiResponse,
 } from "./shared/http";
 import { baseLogMetadata, emitMetric, hashReference, writeSafeLog } from "./shared/logging";
+import { HISTORY_SORT_PREFIX, historyKey } from "./shared/table-keys";
 
 interface SessionRecord {
   sessionId?: unknown;
@@ -31,6 +32,7 @@ interface SessionRecord {
   lastSequence?: unknown;
   eventCount?: unknown;
   sessionEndsAt?: unknown;
+  historySk?: unknown;
   status?: unknown;
 }
 
@@ -48,6 +50,7 @@ interface SessionState {
   eventCount: number;
   sessionEndsAt: string;
   status: "created" | "completed";
+  historySk?: string;
   events: InterviewEvent[];
 }
 
@@ -81,7 +84,7 @@ async function loadSessionState(
     TableName: tableName,
     Key: { PK: `SESSION#${sessionId}`, SK: "META" },
     ConsistentRead: true,
-    ProjectionExpression: "sessionId, userId, lastSequence, eventCount, sessionEndsAt, #status",
+    ProjectionExpression: "sessionId, userId, lastSequence, eventCount, sessionEndsAt, historySk, #status",
     ExpressionAttributeNames: { "#status": "status" },
   }));
   const session = sessionResponse.Item as SessionRecord | undefined;
@@ -131,6 +134,9 @@ async function loadSessionState(
     eventCount: typeof session.eventCount === "number" ? session.eventCount : stored.length,
     sessionEndsAt: session.sessionEndsAt,
     status: session.status,
+    historySk: typeof session.historySk === "string" && session.historySk.startsWith(HISTORY_SORT_PREFIX)
+      ? session.historySk
+      : undefined,
     events: stored,
   };
 }
@@ -154,82 +160,103 @@ export function assertSessionAcceptsNewEvents(input: {
   }
 }
 
-async function transactAppend(
-  tableName: string,
-  sessionId: string,
-  userId: string,
-  currentSequence: number,
-  currentEventCount: number,
-  events: readonly InterviewEvent[],
-  appendGraceSeconds: number,
-  now: Date,
-): Promise<void> {
-  if (events.length === 0) return;
-  const lastAcceptedSequence = events.at(-1)?.sequence;
-  if (lastAcceptedSequence === undefined) return;
-  const nextSequence = Math.max(currentSequence, lastAcceptedSequence);
-  const completesSession = events.some((event) => event.type === "interview.completed");
-  const nextEventCount = currentEventCount + events.length;
-  const minimumSessionEndsAt = new Date(now.getTime() - appendGraceSeconds * 1_000).toISOString();
+type TransactItem = NonNullable<TransactWriteCommandInput["TransactItems"]>[number];
 
-  await documentClient.send(new TransactWriteCommand({
-    TransactItems: [
-      {
-        Update: {
-          TableName: tableName,
-          Key: { PK: `SESSION#${sessionId}`, SK: "META" },
-          UpdateExpression:
-            "SET lastSequence = :nextSequence, eventCount = :nextEventCount, #status = :nextStatus, updatedAt = :updatedAt",
-          ConditionExpression:
-            "userId = :userId AND lastSequence = :currentSequence AND eventCount = :currentEventCount AND #status = :openStatus AND sessionEndsAt >= :minimumSessionEndsAt",
-          ExpressionAttributeNames: { "#status": "status" },
-          ExpressionAttributeValues: {
-            ":userId": userId,
-            ":currentSequence": currentSequence,
-            ":nextSequence": nextSequence,
-            ":currentEventCount": currentEventCount,
-            ":nextEventCount": nextEventCount,
-            ":openStatus": "created",
-            ":nextStatus": completesSession ? "completed" : "created",
-            ":minimumSessionEndsAt": minimumSessionEndsAt,
-            ":updatedAt": now.toISOString(),
-          },
+export interface AppendTransactionInput {
+  tableName: string;
+  sessionId: string;
+  userId: string;
+  currentSequence: number;
+  currentEventCount: number;
+  events: readonly InterviewEvent[];
+  appendGraceSeconds: number;
+  historySk?: string;
+  now: Date;
+}
+
+export function buildAppendTransaction(input: AppendTransactionInput): TransactItem[] {
+  const lastAcceptedSequence = input.events.at(-1)?.sequence ?? input.currentSequence;
+  const nextSequence = Math.max(input.currentSequence, lastAcceptedSequence);
+  const completesSession = input.events.some((event) => event.type === "interview.completed");
+  const receivedAt = input.now.toISOString();
+  const minimumSessionEndsAt = new Date(input.now.getTime() - input.appendGraceSeconds * 1_000).toISOString();
+  const mustNotExist = "attribute_not_exists(PK) AND attribute_not_exists(SK)";
+
+  const items: TransactItem[] = [
+    {
+      Update: {
+        TableName: input.tableName,
+        Key: { PK: `SESSION#${input.sessionId}`, SK: "META" },
+        UpdateExpression:
+          "SET lastSequence = :nextSequence, eventCount = :nextEventCount, #status = :nextStatus, updatedAt = :updatedAt",
+        ConditionExpression:
+          "userId = :userId AND lastSequence = :currentSequence AND eventCount = :currentEventCount AND #status = :openStatus AND sessionEndsAt >= :minimumSessionEndsAt",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: {
+          ":userId": input.userId,
+          ":currentSequence": input.currentSequence,
+          ":nextSequence": nextSequence,
+          ":currentEventCount": input.currentEventCount,
+          ":nextEventCount": input.currentEventCount + input.events.length,
+          ":openStatus": "created",
+          ":nextStatus": completesSession ? "completed" : "created",
+          ":minimumSessionEndsAt": minimumSessionEndsAt,
+          ":updatedAt": receivedAt,
         },
       },
-      ...events.map((event) => ({
-        Put: {
-          TableName: tableName,
-          Item: {
-            PK: `SESSION#${sessionId}`,
-            SK: eventSortKey(event),
-            entityType: "InterviewEvent",
-            eventId: event.id,
-            sessionId: event.sessionId,
-            sequence: event.sequence,
-            occurredAt: event.occurredAt,
-            eventType: event.type,
-            payload: event.payload,
-            receivedAt: now.toISOString(),
-          },
-          ConditionExpression: "attribute_not_exists(PK) AND attribute_not_exists(SK)",
+    },
+    ...input.events.map((event): TransactItem => ({
+      Put: {
+        TableName: input.tableName,
+        Item: {
+          PK: `SESSION#${input.sessionId}`,
+          SK: eventSortKey(event),
+          entityType: "InterviewEvent",
+          eventId: event.id,
+          sessionId: event.sessionId,
+          sequence: event.sequence,
+          occurredAt: event.occurredAt,
+          eventType: event.type,
+          payload: event.payload,
+          receivedAt,
         },
-      })),
-      ...events.map((event) => ({
-        Put: {
-          TableName: tableName,
-          Item: {
-            PK: `SESSION#${sessionId}`,
-            SK: `EVENT_ID#${event.id}`,
-            entityType: "EventIdentity",
-            eventId: event.id,
-            sequence: event.sequence,
-            createdAt: new Date().toISOString(),
-          },
-          ConditionExpression: "attribute_not_exists(PK) AND attribute_not_exists(SK)",
+        ConditionExpression: mustNotExist,
+      },
+    })),
+    ...input.events.map((event): TransactItem => ({
+      Put: {
+        TableName: input.tableName,
+        Item: {
+          PK: `SESSION#${input.sessionId}`,
+          SK: `EVENT_ID#${event.id}`,
+          entityType: "EventIdentity",
+          eventId: event.id,
+          sequence: event.sequence,
+          createdAt: receivedAt,
         },
-      })),
-    ],
-  }));
+        ConditionExpression: mustNotExist,
+      },
+    })),
+  ];
+
+  if (completesSession && input.historySk) {
+    items.push({
+      Update: {
+        TableName: input.tableName,
+        Key: historyKey(input.userId, input.historySk),
+        UpdateExpression: "SET #status = :grading, completedAt = :completedAt",
+        ConditionExpression: "attribute_exists(PK)",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":grading": "grading", ":completedAt": receivedAt },
+      },
+    });
+  }
+  return items;
+}
+
+async function transactAppend(input: AppendTransactionInput): Promise<void> {
+  if (input.events.length === 0) return;
+  await documentClient.send(new TransactWriteCommand({ TransactItems: buildAppendTransaction(input) }));
 }
 
 function validateAgainstState(batch: AppendEventBatch, state: SessionState) {
@@ -284,16 +311,17 @@ async function appendWithOptimisticRetry(
     });
 
     try {
-      await transactAppend(
+      await transactAppend({
         tableName,
-        batch.sessionId,
+        sessionId: batch.sessionId,
         userId,
-        state.lastSequence,
-        state.eventCount,
-        validation.accepted,
+        currentSequence: state.lastSequence,
+        currentEventCount: state.eventCount,
+        events: validation.accepted,
         appendGraceSeconds,
+        historySk: state.historySk,
         now,
-      );
+      });
       return {
         acceptedIds: validation.accepted.map((event) => event.id),
         duplicateIds: validation.duplicateIds,

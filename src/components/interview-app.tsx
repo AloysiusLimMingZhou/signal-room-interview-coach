@@ -94,7 +94,7 @@ export function InterviewApp() {
   const [scores, setScores] = useState<EvidenceScore[]>([]);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [microphoneActive, setMicrophoneActive] = useState(false);
-  const [authStatus, setAuthStatus] = useState<{ p1Enabled: boolean; authenticated: boolean } | null>(null);
+  const [authStatus, setAuthStatus] = useState<{ p1Enabled: boolean; authenticated: boolean; contactUrl?: string } | null>(null);
   const [requiresSignIn, setRequiresSignIn] = useState(false);
   const adapterRef = useRef<RealtimeAdapter | null>(null);
   const sessionStartedAtRef = useRef<number | null>(null);
@@ -144,7 +144,17 @@ export function InterviewApp() {
           typeof (payload as Record<string, unknown>).p1Enabled === "boolean" &&
           typeof (payload as Record<string, unknown>).authenticated === "boolean"
         ) {
-          setAuthStatus(payload as { p1Enabled: boolean; authenticated: boolean });
+          const record = payload as Record<string, unknown>;
+          const contactUrl =
+            typeof record.contactUrl === "string" &&
+            (record.contactUrl.startsWith("https://") || record.contactUrl.startsWith("mailto:"))
+              ? record.contactUrl
+              : undefined;
+          setAuthStatus({
+            p1Enabled: record.p1Enabled as boolean,
+            authenticated: record.authenticated as boolean,
+            ...(contactUrl ? { contactUrl } : {}),
+          });
         }
       })
       .catch(() => undefined);
@@ -194,7 +204,8 @@ export function InterviewApp() {
         setRequiresSignIn(true);
         throw new Error("Sign in before starting the protected P1 interview.");
       }
-      if (response.status === 429) throw new Error("This month's 10-interview pilot limit has been reached.");
+      if (response.status === 403) throw new Error("This account has not been enabled yet. Access is invite-only.");
+      if (response.status === 429) throw new Error("This month's voice interview allowance has been used.");
       if (!response.ok) throw new Error("Could not create the interview room.");
       const provisioned = (await response.json()) as RealtimeSession;
       persistenceModeRef.current = provisioned.persistence;
@@ -457,7 +468,14 @@ export function InterviewApp() {
             <div className="privacy-note"><ShieldCheck size={17} /><p><strong>Private by default.</strong> {authStatus?.p1Enabled ? "P1 syncs validated transcript and artifact events to AWS." : "Mock mode keeps interview content in this browser."} Audio is never recorded.</p></div>
             {connectionError && <p className="error-message" role="alert">{connectionError}</p>}
             {(requiresSignIn || (authStatus?.p1Enabled && !authStatus.authenticated)) ? (
-              <a className="primary-button start-button" href="/api/auth/login">Sign in with Cognito<ArrowGlyph /></a>
+              <>
+                <a className="primary-button start-button" href="/api/auth/login">Sign in with Cognito<ArrowGlyph /></a>
+                {authStatus?.contactUrl && (
+                  <a className="setup-footnote" href={authStatus.contactUrl} rel="noopener noreferrer" target="_blank">
+                    No account? Request access
+                  </a>
+                )}
+              </>
             ) : (
               <button className="primary-button start-button" type="button" onClick={startInterview} disabled={connecting}>
                 {connecting ? "Opening room…" : "Enter interview room"}<ArrowGlyph />

@@ -4,6 +4,7 @@ import {
   PILOT_MAX_APPEND_GRACE_SECONDS,
   PILOT_MAX_SESSION_EVENTS,
   assertSessionAcceptsNewEvents,
+  buildAppendTransaction,
   gradingMessagesForPersistedEvents,
 } from "../lambda/event-handler";
 import { SafeHttpError } from "../lambda/shared/http";
@@ -101,5 +102,45 @@ describe("session evidence budget", () => {
       expect(error).toBeInstanceOf(SafeHttpError);
       expect(error).toMatchObject({ errorCode });
     }
+  });
+});
+
+describe("append transaction", () => {
+  const historySk = `SESSION#2026-09-02T00:00:00.000Z#${sessionId}`;
+  const base = {
+    tableName: "sessions",
+    sessionId,
+    userId: "user-123",
+    currentSequence: 0,
+    currentEventCount: 0,
+    appendGraceSeconds: PILOT_MAX_APPEND_GRACE_SECONDS,
+    now: new Date("2026-09-02T00:05:00.000Z"),
+  };
+  const transcriptEvent: AppendEventBatch["events"][number] = {
+    id: "0e8f2a4c-6b1d-4c3e-9f5a-1b2c3d4e5f60",
+    sessionId,
+    sequence: 1,
+    occurredAt: "2026-09-02T00:01:00.000Z",
+    type: "transcript.final",
+    payload: { speaker: "candidate", text: "I would use a hash map.", evidenceId: "evidence:voice-1", startMs: 0, endMs: 1_000 },
+  };
+
+  it("moves the history item to grading when the batch completes the session", () => {
+    const items = buildAppendTransaction({ ...base, events: completionBatch().events, historySk });
+    expect(items).toHaveLength(4);
+    const historyUpdate = items[3].Update;
+    expect(historyUpdate?.Key).toEqual({ PK: "USER#user-123", SK: historySk });
+    expect(historyUpdate?.ExpressionAttributeValues).toMatchObject({ ":grading": "grading" });
+    expect(items[0].Update?.ExpressionAttributeValues).toMatchObject({ ":nextStatus": "completed" });
+  });
+
+  it("leaves history untouched for batches that do not complete the session", () => {
+    const items = buildAppendTransaction({ ...base, events: [transcriptEvent], historySk });
+    expect(items).toHaveLength(3);
+    expect(JSON.stringify(items)).not.toContain("USER#");
+  });
+
+  it("skips history for sessions without a history item", () => {
+    expect(buildAppendTransaction({ ...base, events: completionBatch().events })).toHaveLength(3);
   });
 });

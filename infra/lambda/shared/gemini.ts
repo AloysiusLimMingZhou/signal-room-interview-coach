@@ -1,6 +1,6 @@
-import { GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
+import { GetParameterCommand } from "@aws-sdk/client-ssm";
 import { gradingReportSchema, type GradingReport, type SessionRequest } from "./contracts";
-import { requiredEnvironment, secretsClient } from "./aws-clients";
+import { requiredEnvironment, ssmClient } from "./aws-clients";
 
 const TOKEN_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/auth_tokens";
 const DEFAULT_LIVE_MODEL = "gemini-3.1-flash-live-preview";
@@ -36,27 +36,39 @@ function parseSecretValue(secret: string): string {
     try {
       parsed = JSON.parse(trimmed);
     } catch {
-      throw new Error("Gemini secret is not valid JSON.");
+      throw new Error("Gemini API key is not valid JSON.");
     }
     if (parsed && typeof parsed === "object") {
       const record = parsed as Record<string, unknown>;
       const candidate = record.GEMINI_API_KEY ?? record.apiKey ?? record.key;
       if (typeof candidate === "string" && candidate.trim().length >= 20) return candidate.trim();
     }
-    throw new Error("Gemini secret JSON has no supported API-key field.");
+    throw new Error("Gemini API key JSON has no supported API-key field.");
   }
 
-  if (trimmed.length < 20) throw new Error("Gemini secret value is not configured.");
+  if (trimmed.length < 20) throw new Error("Gemini API key is not configured.");
   return trimmed;
 }
 
-export async function loadGeminiApiKey(): Promise<string> {
-  const response = await secretsClient.send(new GetSecretValueCommand({
-    SecretId: requiredEnvironment("GEMINI_SECRET_ARN"),
-  }));
+const KEY_CACHE_TTL_MS = 5 * 60_000;
+let cachedKey: { value: string; loadedAt: number } | undefined;
 
-  if (!response.SecretString) throw new Error("Gemini secret has no string value.");
-  return parseSecretValue(response.SecretString);
+export function clearGeminiApiKeyCache(): void {
+  cachedKey = undefined;
+}
+
+/** Reads the SecureString once per container per five minutes so key rotation takes effect. */
+export async function loadGeminiApiKey(now = Date.now()): Promise<string> {
+  if (cachedKey && now - cachedKey.loadedAt < KEY_CACHE_TTL_MS) return cachedKey.value;
+  const response = await ssmClient.send(new GetParameterCommand({
+    Name: requiredEnvironment("GEMINI_KEY_PARAMETER_NAME"),
+    WithDecryption: true,
+  }));
+  const value = response.Parameter?.Value;
+  if (typeof value !== "string") throw new Error("Gemini API key parameter has no value.");
+  const key = parseSecretValue(value);
+  cachedKey = { value: key, loadedAt: now };
+  return key;
 }
 
 function systemInstruction(request: SessionRequest): string {
