@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createGeminiSession } from "@/lib/gemini-token";
+import { sessionRequestV2Schema, sessionResponseV2Schema } from "@/lib/p1/session-v2";
 import {
   sessionCreationRequestSchema,
   sessionCreationResponseSchema,
@@ -84,7 +85,8 @@ export async function POST(request: Request) {
     );
   }
 
-  const parsed = sessionCreationRequestSchema.safeParse(body);
+  const isV2 = Boolean(body && typeof body === "object" && "channel" in body);
+  const parsed = isV2 ? sessionRequestV2Schema.safeParse(body) : sessionCreationRequestSchema.safeParse(body);
 
   if (!parsed.success) {
     return NextResponse.json(
@@ -122,8 +124,14 @@ export async function POST(request: Request) {
         return NextResponse.json(safe.body, { status: safe.status, headers: noStoreHeaders });
       }
 
-      const provisioned = sessionCreationResponseSchema.safeParse(upstream.payload);
+      const provisioned = isV2 ? sessionResponseV2Schema.safeParse(upstream.payload) : sessionCreationResponseSchema.safeParse(upstream.payload);
       if (!provisioned.success) throw new Error("Invalid P1 session response");
+      if ("channel" in parsed.data && (
+        !("channel" in provisioned.data) || provisioned.data.channel !== parsed.data.channel ||
+        provisioned.data.question.id.split(".")[0] !== parsed.data.track ||
+        (parsed.data.track === "coding" && provisioned.data.question.language !== parsed.data.language) ||
+        provisioned.data.maxDurationMinutes > parsed.data.durationMinutes
+      )) throw new Error("Session configuration mismatch");
       return NextResponse.json(provisioned.data, { headers: noStoreHeaders });
     } catch {
       return NextResponse.json(
@@ -133,7 +141,7 @@ export async function POST(request: Request) {
     }
   }
 
-  if (!localInterviewModeAllowed()) {
+  if ("channel" in parsed.data || !localInterviewModeAllowed()) {
     return NextResponse.json(
       {
         error: "p1_configuration_required",

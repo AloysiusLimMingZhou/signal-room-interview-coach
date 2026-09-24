@@ -203,6 +203,13 @@ export class P1Stack extends Stack {
       reservedConcurrency: 5,
       environment: { ...baseEnvironment, ...allowanceEnvironment(allowances) },
     });
+    const turnFunction = this.createFunction("Turn", props.stageName, retention, {
+      entry: this.lambdaEntry("turn-handler.ts"),
+      timeout: Duration.seconds(20), // Must remain shorter than the 30-second paid-call lease.
+      memorySize: 512,
+      reservedConcurrency: 2,
+      environment: { ...baseEnvironment, ...textLimitEnvironment(textLimits), GEMINI_KEY_PARAMETER_NAME: geminiKeyParameterName },
+    });
 
     // DynamoDB authorizes transactions by their underlying item actions.
     this.grantTableActions(sessionFunction.role, table, [
@@ -225,8 +232,10 @@ export class P1Stack extends Stack {
       "dynamodb:Query",
     ]);
     this.grantTableActions(accountFunction.role, table, ["dynamodb:GetItem", "dynamodb:Query"]);
+    this.grantTableActions(turnFunction.role, table, ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
     this.grantGeminiKeyRead(sessionFunction.role, geminiKeyParameterName);
     this.grantGeminiKeyRead(graderFunction.role, geminiKeyParameterName);
+    this.grantGeminiKeyRead(turnFunction.role, geminiKeyParameterName);
     gradingQueue.grantSendMessages(eventFunction.role);
     gradingQueue.grantConsumeMessages(graderFunction.role);
     graderFunction.fn.addEventSource(new lambdaEventSources.SqsEventSource(gradingQueue, {
@@ -245,13 +254,14 @@ export class P1Stack extends Stack {
       sessionFunction: sessionFunction.fn,
       eventFunction: eventFunction.fn,
       accountFunction: accountFunction.fn,
+      turnFunction: turnFunction.fn,
     });
 
     if (isProduction && props.alertEmail) {
       const dashboard = addProductionObservability(this, {
         stageName: props.stageName,
         api,
-        functions: [sessionFunction.fn, eventFunction.fn, graderFunction.fn, accountFunction.fn],
+        functions: [sessionFunction.fn, eventFunction.fn, graderFunction.fn, accountFunction.fn, turnFunction.fn],
         gradingDlq,
         metricNamespace: METRIC_NAMESPACE,
         alertEmail: props.alertEmail,
@@ -276,6 +286,7 @@ export class P1Stack extends Stack {
     sessionFunction: lambda.IFunction;
     eventFunction: lambda.IFunction;
     accountFunction: lambda.IFunction;
+    turnFunction: lambda.IFunction;
   }): apigwv2.HttpApi {
     const accessLogs = new logs.LogGroup(this, "ApiAccessLogs", {
       logGroupName: `/aws/apigateway/signal-room-${input.stageName}`,
@@ -304,6 +315,7 @@ export class P1Stack extends Stack {
     const routes: Array<[string, apigwv2.HttpMethod, apigwv2.HttpRouteIntegration]> = [
       ["/v1/realtime/sessions", apigwv2.HttpMethod.POST, new integrations.HttpLambdaIntegration("SessionIntegration", input.sessionFunction)],
       ["/v1/interview-events", apigwv2.HttpMethod.POST, new integrations.HttpLambdaIntegration("EventIntegration", input.eventFunction)],
+      ["/v1/sessions/{sessionId}/turn", apigwv2.HttpMethod.POST, new integrations.HttpLambdaIntegration("TurnIntegration", input.turnFunction)],
       ["/v1/me", apigwv2.HttpMethod.GET, accountIntegration],
       ["/v1/sessions", apigwv2.HttpMethod.GET, accountIntegration],
       ["/v1/sessions/{sessionId}/report", apigwv2.HttpMethod.GET, accountIntegration],

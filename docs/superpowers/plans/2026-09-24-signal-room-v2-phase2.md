@@ -2,7 +2,7 @@
 
 Date: 2026-09-24. Scope: design spec section 5, with architecture.md authoritative.
 
-The owner authorized local Phase 2 development while the Phase 1 deployment checkpoint is pending. This does not authorize deployment, cloud credentials, higher caps, or merging main. Keep the implemented/automated status separate from the real-session exit criteria. Work in small reviewed PRs, with all three GitHub Actions CI jobs passing before integration.
+The owner authorized Phase 2 development while the Phase 1 deployment checkpoint is pending. The latest instruction also authorizes committing/pushing each completed section, opening a PR, and merging into main only after CI passes. The repository ruleset requires PRs but no separate reviewer approval for this solo project. This does not authorize deployment, cloud credentials or higher caps. Keep the implemented/automated status separate from real-session exit criteria.
 
 ## Delivery sequence and file scope
 
@@ -17,7 +17,7 @@ The owner authorized local Phase 2 development while the Phase 1 deployment chec
 
 ## Provider evidence and unresolved live probes
 
-Progress: step 1 is integrated (PR #12). Step 2's session/evidence contracts, channel quotas and synth/runtime text settings are implemented; report-v2 work remains with step 4. The browser still uses the legacy session contract. Each following endpoint/UI slice must preserve this compatibility until the migration is complete.
+Progress: step 1 (PR #12) and step 2's session/evidence contracts (PR #13) reached main through PR #14. The text service, BFF turn route, additive BFF session contract and its step-5 Lambda/JWT/IAM/monitoring wiring are implemented in the next section. Report-v2 remains with step 4; room/adapters still use legacy contracts until their migration. Preserve compatibility throughout.
 
 Official documentation checked 2026-09-24:
 
@@ -25,12 +25,13 @@ Official documentation checked 2026-09-24:
 - [Live tools](https://ai.google.dev/gemini-api/docs/live-api/tools) lists synchronous function calling for gemini-3.1-flash-live-preview. Tool constraints and actual view_code behavior still need a real model check (V2).
 - [Pinned model](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview) supports incremental client content; isolate control transport so V3 can be corrected without changing product code. Keep the specified model rather than silently migrate it.
 - [Pricing](https://ai.google.dev/gemini-api/docs/pricing) lists Live text input/output at $0.75/$4.50 and audio input/output at $3/$12 per million tokens; Flash-Lite text input/output at $0.10/$0.40 per million tokens. These rates do not measure accumulated Live context or prove the budget estimates. Keep caps and first-month cost review.
+- [Generate content API](https://ai.google.dev/api/generate-content) defines systemInstruction, authoritative contents and bounded generationConfig used by the text provider. The implementation keeps the specified Flash-Lite model and never enables code execution/tools.
 - V4 (deployed Cognito claim shape) and V6 (actual browser audio capture) remain live checks. Mocks cannot settle them.
 
 ## Design gaps resolved explicitly during implementation
 
 - Report citations need authenticated persisted evidence retrieval, not browser memory alone.
-- The text-turn spec's transaction after the model call prevents duplicate writes but not duplicate paid calls; reserve a short lease before generation and replay the stored response afterward.
+- The text-turn spec's transaction after the model call prevents duplicate writes but not duplicate paid calls. The implementation reserves a 30-second lease before generation, longer than the 20-second Lambda timeout, and replays the stored response afterward. Both successful turns and generation attempts are capped at 40; failures consume attempts to prevent unlimited paid retries. BFF/provider timeouts are 25/10 seconds. An ambiguous failed call is not exactly-once, but retry spend is bounded.
 - Deletion must coordinate with in-flight grading/turn/event writes through a deletion tombstone/conditional ownership state, not just delete rows while workers can recreate them.
-- Twists stay server-side until requested; expose only a bounded public twist payload through the control response or define a safe public question extension in architecture before use.
+- Twists stay server-side until requested. Text control responses now return only the bounded public twist kind/prompt; voice control transport remains to be wired in the adapter slice.
 - These changes must be documented and tested with the endpoint implementation, while preserving cost, ownership and validation invariants.
