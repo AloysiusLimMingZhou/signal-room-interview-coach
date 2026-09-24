@@ -22,10 +22,16 @@ export function localInterviewModeAllowed(nodeEnvironment = process.env.NODE_ENV
 }
 
 function safeUpstreamError(status: number) {
-  if (status === 401 || status === 403) {
+  if (status === 401) {
     return {
       status: 401,
       body: { error: "authentication_required", message: "Sign in to start a P1 interview." },
+    };
+  }
+  if (status === 403) {
+    return {
+      status: 403,
+      body: { error: "account_not_enabled", message: "This account has not been enabled yet. Access is invite-only." },
     };
   }
   if (status === 429) {
