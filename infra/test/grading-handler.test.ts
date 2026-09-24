@@ -113,6 +113,51 @@ describe("grading outcomes", () => {
     expect(update.input.ExpressionAttributeValues).toEqual({ ":status": "failed" });
   });
 
+  it("keeps successful grading successful when the derived history write fails", async () => {
+    const baseSend = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof UpdateCommand) throw new Error("History unavailable");
+      return baseSend(command);
+    });
+    mockGradeEvidence.mockResolvedValue({ summary: "Solid.", scores: [scoreAt(4)] });
+    expect((await handler(sqsEvent("1"))).batchItemFailures).toEqual([]);
+    expect(mockGradeEvidence).toHaveBeenCalledTimes(1);
+    expect(sentCommands().some((command) => command instanceof PutCommand && command.input.Item?.status === "complete"))
+      .toBe(true);
+  });
+
+  it("preserves a report completed by another worker during terminal failure", async () => {
+    const baseSend = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof PutCommand && command.input.Item?.status === "failed") {
+        expect(command.input.ConditionExpression).toBe("attribute_not_exists(PK) OR #status <> :complete");
+        expect(command.input.ExpressionAttributeValues).toEqual({ ":complete": "complete" });
+        throw Object.assign(new Error("Already complete"), { name: "ConditionalCheckFailedException" });
+      }
+      return baseSend(command);
+    });
+    mockGradeEvidence.mockRejectedValue(new Error("Provider failed"));
+    expect((await handler(sqsEvent("3"))).batchItemFailures).toEqual([{ itemIdentifier: "message-1" }]);
+    expect(sentCommands().some((command) => command instanceof UpdateCommand)).toBe(false);
+  });
+
+  it("still returns the SQS failure when persisting terminal status fails", async () => {
+    const baseSend = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof PutCommand && command.input.Item?.status === "failed") throw new Error("Table unavailable");
+      return baseSend(command);
+    });
+    mockGradeEvidence.mockRejectedValue(new Error("Provider failed"));
+    expect((await handler(sqsEvent("3"))).batchItemFailures).toEqual([{ itemIdentifier: "message-1" }]);
+  });
+
+  it("does not repeat paid grading for an already completed report", async () => {
+    mockSend.mockResolvedValue({ Item: { status: "complete" } });
+    expect((await handler(sqsEvent("3"))).batchItemFailures).toEqual([]);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockGradeEvidence).not.toHaveBeenCalled();
+  });
+
   it("leaves earlier attempts retryable without marking failure", async () => {
     mockGradeEvidence.mockRejectedValue(new Error("Gemini grading request failed."));
 

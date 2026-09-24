@@ -70,7 +70,14 @@ describe("lean P1 infrastructure", () => {
     for (const routeKey of routeKeys) {
       synthesized.hasResourceProperties("AWS::ApiGatewayV2::Route", { RouteKey: routeKey, AuthorizationType: "JWT" });
     }
-    expect(JSON.stringify(synthesized.findResources("AWS::ApiGatewayV2::Api"))).not.toContain('"*"');
+    synthesized.hasResourceProperties("AWS::ApiGatewayV2::Api", {
+      CorsConfiguration: {
+        AllowOrigins: ["http://localhost:3000"],
+        AllowMethods: ["GET", "POST", "OPTIONS"],
+        AllowHeaders: ["authorization", "content-type", "idempotency-key"],
+        MaxAge: 3600,
+      },
+    });
   });
 
   it("keeps secrets and interview content out of Lambda configuration and API logs", () => {
@@ -104,6 +111,35 @@ describe("lean P1 infrastructure", () => {
     expect(serialized).toContain("ssm.ap-southeast-1.amazonaws.com");
   });
 
+  it("scopes every data grant and keeps the account Lambda read-only", () => {
+    const synthesized = template();
+    const functions = synthesized.findResources("AWS::Lambda::Function");
+    const account = Object.values(functions).find((fn) => fn.Properties.FunctionName === "signal-room-account-test")!;
+    const accountRole = account.Properties.Role["Fn::GetAtt"][0];
+    const policies = Object.values(synthesized.findResources("AWS::IAM::Policy"));
+    const accountPolicy = policies.find((policy) => policy.Properties.Roles.some((role: { Ref: string }) => role.Ref === accountRole))!;
+    const grants = accountPolicy.Properties.PolicyDocument.Statement;
+    const tableGrant = grants.find((grant: { Sid?: string }) => grant.Sid === "InterviewTableAccess");
+    expect(tableGrant.Action).toEqual(["dynamodb:GetItem", "dynamodb:Query"]);
+    expect(JSON.stringify(tableGrant.Resource)).toContain("InterviewTable");
+    expect(JSON.stringify(grants)).not.toMatch(/ssm:|kms:/);
+
+    const statements = policies.flatMap((policy) => policy.Properties.PolicyDocument.Statement);
+    const parameterGrants = statements.filter((grant) => grant.Sid === "GeminiKeyParameterRead");
+    expect(parameterGrants).toHaveLength(2);
+    for (const grant of parameterGrants) {
+      expect(grant.Action).toBe("ssm:GetParameter");
+      expect(JSON.stringify(grant.Resource)).toContain("parameter/signal-room/test/gemini-api-key");
+      expect(JSON.stringify(grant.Resource)).not.toContain("*");
+    }
+    const decryptGrants = statements.filter((grant) => grant.Sid === "GeminiKeyDecryptViaSsm");
+    expect(decryptGrants).toHaveLength(2);
+    for (const grant of decryptGrants) {
+      expect(grant.Action).toBe("kms:Decrypt");
+      expect(grant.Condition).toEqual({ StringEquals: { "kms:ViaService": "ssm.ap-southeast-1.amazonaws.com" } });
+    }
+  });
+
   it("wires the grader's redrive limit to its failure detection", () => {
     const synthesized = template();
     synthesized.hasResourceProperties("AWS::SQS::Queue", {
@@ -115,7 +151,7 @@ describe("lean P1 infrastructure", () => {
   });
 
   it("creates no alarms, dashboards, or budgets outside production", () => {
-    const development = template();
+    const development = template("dev");
     development.resourceCountIs("AWS::CloudWatch::Alarm", 0);
     development.resourceCountIs("AWS::CloudWatch::Dashboard", 0);
     development.resourceCountIs("AWS::Budgets::Budget", 0);
@@ -133,7 +169,16 @@ describe("lean P1 infrastructure", () => {
     production.hasResourceProperties("AWS::SNS::Subscription", { Protocol: "email", Endpoint: "alerts@example.com" });
     for (const alarm of Object.values(production.findResources("AWS::CloudWatch::Alarm"))) {
       expect(alarm.Properties.AlarmActions).toHaveLength(1);
+      expect(alarm.Properties.Metrics).toBeUndefined();
+      expect(JSON.stringify(alarm.Properties.AlarmActions)).toContain("OperationsAlerts");
     }
+    production.hasResourceProperties("AWS::Budgets::Budget", {
+      Budget: Match.objectLike({ BudgetLimit: { Amount: 1, Unit: "USD" }, TimeUnit: "MONTHLY" }),
+      NotificationsWithSubscribers: [
+        { Notification: { NotificationType: "FORECASTED", ComparisonOperator: "GREATER_THAN", Threshold: 80, ThresholdType: "PERCENTAGE" }, Subscribers: [{ SubscriptionType: "EMAIL", Address: "alerts@example.com" }] },
+        { Notification: { NotificationType: "ACTUAL", ComparisonOperator: "GREATER_THAN", Threshold: 100, ThresholdType: "PERCENTAGE" }, Subscribers: [{ SubscriptionType: "EMAIL", Address: "alerts@example.com" }] },
+      ],
+    });
     production.hasResourceProperties("AWS::DynamoDB::Table", {
       DeletionProtectionEnabled: true,
       PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },

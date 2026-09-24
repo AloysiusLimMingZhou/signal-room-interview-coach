@@ -2,11 +2,11 @@
 
 **Status:** Source of truth
 
-**Last updated:** 2026-09-02
+**Last updated:** 2026-09-24
 
 **Owner:** Project engineering
 
-**Target:** Web-only P0 local prototype plus P1 access-controlled indie pilot
+**Target:** P0 local prototype plus v2 Phase 1 invite-only pilot (lean AWS)
 **Deployment state:** Implemented and locally verified; cloud resources are not yet deployed
 
 ## 1. Authority and change policy
@@ -17,39 +17,27 @@ An architecture-changing pull request must update this file and the decision log
 
 ## 2. Product boundary
 
-Signal Room is a candidate-facing technical interview coach. It is not an employer screening or automated hiring product.
+Signal Room is a candidate-facing technical interview coach. It does not make employer screening or hire/no-hire decisions.
 
 ### P0 local mode
 
-P0 works without credentials or cloud services:
+Without credentials or cloud services, candidates can choose system-design, ML-design, or algorithms at mid/senior/staff difficulty, complete a scripted text interview, edit code in Monaco, build a structured design canvas, inject a requirement, and receive an evidence-linked deterministic scorecard. State is held in browser memory and disappears on reload.
 
-- choose system-design, ML-design, or algorithms and a difficulty;
-- complete a text-driven mock interview;
-- edit code in Monaco and build a structured design canvas;
-- inject a changing requirement;
-- finish with an evidence-linked scorecard; and
-- view a planning cost estimate.
+### Phase 1 invite-only pilot
 
-State is held in browser memory and reloads are destructive.
+- Cognito authorization code + PKCE sign-in; self sign-up disabled. The owner invites accounts into `owner` or `guest` using `scripts/invite-user.*`.
+- Accounts in neither group cannot create sessions: `403 account_not_enabled` before table access.
+- Constrained, short-lived Gemini Live credentials, with audio sent directly from the browser to Gemini.
+- Separate UTC-month allowances: voice global hard cap **10**, owner 10, guest 2; text global hard cap **60**, owner 60, guest 5. Text counter keys and limits are defined now; text interviews ship in Phase 2.
+- Maximum **10 minutes per voice interview**; global and per-role limits can be lowered but not raised above the hard caps.
+- Append-only transcript, code, canvas, scenario, usage, and lifecycle evidence.
+- Asynchronous independent grading with evidence references in DynamoDB.
+- Read-only account APIs for role/allowances, session history, and stored grading reports. The browser still renders the immediate deterministic scorecard; report/history UI ships in Phase 2.
+- Production-only alarms, dashboard, custom metrics, SNS email notifications, and a monthly AWS budget.
 
-### P1 indie pilot
+`infra/lib/access-policy.ts` defines shared limits for synthesis and Lambda runtime validation; atomic DynamoDB conditions enforce voice reservations. Raising a hard cap is an architecture change. The future text endpoint must reserve its counters atomically before use.
 
-P1 adds:
-
-- Cognito sign-in using authorization code plus PKCE;
-- constrained, short-lived Gemini Live credentials;
-- a global hard cap of **10 interviews per UTC month**;
-- a per-user cap no greater than the global cap;
-- a maximum duration of **10 minutes per interview**;
-- append-only transcript, code, canvas, scenario, usage, and lifecycle evidence;
-- asynchronous independent grading with evidence references persisted to DynamoDB; and
-- CloudWatch logs, metrics, dashboard, alarms, and X-Ray traces.
-
-The P1 grader is wired through storage and the queue, but the browser still renders the immediate deterministic scorecard. An authenticated report-read API and browser polling are required before the Gemini-generated report is user-visible.
-
-The hard caps are enforced in deployment configuration and in an atomic DynamoDB transaction. Raising them is an architecture change, not an environment-variable-only change.
-
-The current system excludes webcam analysis, emotion or accent scoring, covert proctoring, hire/no-hire judgments, payments, server-side arbitrary code execution, and mobile delivery.
+Webcam, emotion/accent scoring, covert proctoring, payments, server-side arbitrary code execution, and mobile delivery remain excluded. Phase 2 introduces Coding/Behavioral tracks, a real question-aware interview loop, text interviews, report/history UI, and session deletion.
 
 ## 3. Architectural principles
 
@@ -58,7 +46,7 @@ The current system excludes webcam analysis, emotion or accent scoring, covert p
 3. **Secrets stay server-side.** The standard Gemini key is never sent to client code or browser storage.
 4. **The web server is a BFF.** Cognito access tokens remain in a scoped HttpOnly cookie and are attached to AWS API calls only by Next.js route handlers.
 5. **Evidence is append-only.** Events have stable IDs, sequence numbers, strict schemas, and retry-safe writes.
-6. **Independent grading is idempotent.** Completion retries do not enqueue duplicate work, and the grader takes a DynamoDB lease before a paid model call.
+6. **Independent grading is idempotent.** Completion retries may re-enqueue work to repair delivery failures; the grader checks completion and takes a DynamoDB lease before a paid model call.
 7. **No evidence in operational logs.** Transcripts, code, canvas content, audio, resumes, cookies, authorization headers, and credentials are rejected by the logging schema.
 8. **Known access patterns first.** DynamoDB serves online state; relational infrastructure waits for demonstrated requirements.
 9. **Cost is a product invariant.** Quotas bound usage, while measured provider billing decides later scaling.
@@ -67,95 +55,51 @@ The current system excludes webcam analysis, emotion or accent scoring, covert p
 
 ~~~mermaid
 flowchart LR
-  subgraph Browser[Candidate browser]
-    UI[Next.js interview workbench]
-    State[XState lifecycle]
-    Code[Monaco]
-    Canvas[Structured canvas]
-    Audio[AudioWorklet]
-    Adapter[Gemini or mock adapter]
-  end
-
-  subgraph Web[Vercel-hosted Next.js BFF]
-    Auth[/api/auth/*]
-    Session[/api/realtime/session]
-    Events[/api/interview-events]
-  end
-
-  subgraph AWS[AWS ap-southeast-1]
-    Cognito[Cognito Hosted UI]
-    API[API Gateway HTTP API + JWT authorizer]
-    SessionFn[Session Lambda]
-    EventFn[Event Lambda]
-    DB[(DynamoDB)]
-    Queue[SQS + DLQ]
-    Grader[Grader Lambda]
-    Secret[Secrets Manager]
-    Bucket[(Private S3 boundary)]
-    Obs[CloudWatch + X-Ray]
-  end
-
-  subgraph Google[Google Gemini]
-    Token[Ephemeral-token service]
-    Live[Gemini Live WebSocket]
-    Grade[Gemini text grader]
-  end
-
-  UI --> State
-  Code --> State
-  Canvas --> State
-  Audio --> Adapter
-  Browser --> Auth
-  Auth <-->|OAuth code + PKCE| Cognito
-  Browser --> Session
-  Browser --> Events
-  Session -->|HttpOnly access token| API
-  Events -->|HttpOnly access token| API
-  API --> SessionFn
-  API --> EventFn
-  SessionFn --> DB
-  SessionFn --> Secret
-  SessionFn --> Token
-  Token -->|constrained token| SessionFn
-  SessionFn --> Session
-  Adapter <-->|direct 16 kHz input / 24 kHz output| Live
-  EventFn --> DB
-  EventFn --> Queue
-  Queue --> Grader
-  Grader --> Secret
-  Grader --> Grade
+  Browser[Browser: XState, Monaco, canvas, AudioWorklet] --> BFF[Next.js 16 BFF on Vercel]
+  BFF <-->|code + PKCE| Cognito[Cognito: owner/guest groups]
+  BFF -->|access token from HttpOnly cookie| API[HTTP API + Cognito JWT authorizer]
+  API --> Session[Session Lambda]
+  API --> Events[Event Lambda]
+  API --> Account[Account Lambda]
+  Session --> DB[(DynamoDB single table)]
+  Events --> DB
+  Account --> DB
+  Session --> Parameter[SSM SecureString]
+  Session --> Token[Gemini ephemeral-token service]
+  Token --> Browser
+  Browser <-->|direct audio WebSocket| Live[Gemini Live]
+  Events --> Queue[SQS + DLQ]
+  Queue --> Grader[Grader Lambda]
+  Grader --> Parameter
+  Grader --> Grade[Gemini text grader]
   Grader --> DB
-  API --> Obs
-  SessionFn --> Obs
-  EventFn --> Obs
-  Grader --> Obs
-  Bucket -.->|recording upload is deferred| Browser
+  API --> Logs[Safe logs and X-Ray]
+  Monitor[Prod: 8 alarms, dashboard, SNS email, $1 budget]
 ~~~
 
-When P1_API_URL is unset in development or test, the BFF keeps the local P0 path. When GEMINI_API_KEY is also unset, session creation returns a mock descriptor and no external provider is contacted. A production build without P1_API_URL fails closed with 503; it never exposes the unauthenticated local mock/Gemini route.
+`/api/me`, `/api/sessions`, and `/api/sessions/[id]/report` proxy authenticated GETs to the Account Lambda. Session creation and evidence append use authenticated POST routes. Audio never traverses API Gateway or Lambda.
+
+When `P1_API_URL` is unset in development/test, the BFF retains the local P0 path. Without `GEMINI_API_KEY`, that path returns a mock descriptor and contacts no provider. Production without `P1_API_URL` fails closed with 503.
 
 ## 5. Component decisions and implementation status
 
 | Area | Decision | Status |
 |---|---|---|
-| Web | Next.js App Router, React, TypeScript | Implemented |
-| Lifecycle | XState | Implemented |
-| Code/design surfaces | Monaco plus lightweight structured canvas | Implemented; Excalidraw deferred |
-| Styling | Project-owned CSS | Implemented; Tailwind/shadcn deferred |
-| Provider boundary | Mock and Gemini adapters | Implemented |
-| Frontend host | Vercel | Primary deployment target |
-| AWS application plane | CDK, API Gateway HTTP API, ARM Node.js 22 Lambda | Implemented, not deployed |
-| Identity | Cognito Hosted UI, OAuth code + PKCE | Implemented, not deployed |
-| Online data | DynamoDB on-demand single table | Implemented, not deployed |
-| Async work | SQS, DLQ, Lambda grader | Implemented, not deployed; report-read UI deferred |
-| Object boundary | Private encrypted S3, 30-day recordings/ lifecycle | Provisioned only; no upload route/UI |
-| Operations | CloudWatch logs/EMF metrics/dashboard/13 baseline alarms, X-Ray | Implemented, not deployment-tested |
-| Lambda release | Production aliases and CodeDeploy 10%/5-minute canaries | Implemented, not deployment-tested |
-| Analytics SQL | S3 Parquet + Athena | Deferred |
-| Grafana/Prometheus | Not needed for serverless P1 | Deferred |
-| WAF, AWS Budgets, EventBridge jobs | Production hardening | Deferred |
+| Web | Next.js 16 App Router, React 19, TypeScript, project-owned CSS | Implemented |
+| Lifecycle/workbench | XState, Monaco, lightweight structured canvas | Implemented |
+| Provider boundary | Deterministic mock and Gemini adapters | Implemented |
+| Hosting | Vercel frontend plus AWS Singapore backend | First deployment remains Task 16 |
+| Application plane | CDK, HTTP API, four ARM Node.js 22 Lambdas: session/event/grader/account | Implemented, not deployed |
+| Identity | Cognito Hosted UI, code + PKCE, invite-only owner/guest groups | Implemented, not deployed |
+| Online data | DynamoDB on-demand single table; SQS + DLQ for grading | Implemented, not deployed |
+| Secrets | SSM standard SecureString, AWS-managed `aws/ssm` key | Owner creates one parameter per stage |
+| Object storage | No deployed recording bucket or upload path | Deferred until recording consent |
+| Operations | Prod: 8 alarm metrics, 1 dashboard, 8 emitted custom metrics, SNS email, $1 budget | Implemented; live validation pending |
+| Lambda releases | Direct function deployments; AWS before Vercel; backward-compatible `/v1` | Implemented |
+| Reports/history | Account read API implemented; visible AI report and history pages | UI deferred to Phase 2 |
+| Analytics and richer canvas | Offline analytics, React Flow, measured delivery metrics | Later phases |
 
-AWS Amplify is a manual compatibility-gated fallback. Its documented managed SSR support currently covers Next.js through version 15, while this repository uses Next.js 16; see [Amplify Next.js support](https://docs.aws.amazon.com/amplify/latest/userguide/ssr-amplify-support.html).
+No cloud deployment or billing result is implied by local tests. Phase 1 exit criteria require the owner's real deployment checkpoint.
 
 ## 6. Gemini Live strategy
 
@@ -170,7 +114,7 @@ AWS Amplify is a manual compatibility-gated fallback. Its documented managed SSR
 Credential boundaries:
 
 - Local P0 Live mode: POST /api/realtime/session may read GEMINI_API_KEY.
-- P1 session and grader Lambdas read the key from Secrets Manager.
+- P1 session and grader Lambdas read `/signal-room/<stage>/gemini-api-key` from SSM SecureString using `GEMINI_KEY_PARAMETER_NAME`, with decryption and a five-minute per-container cache.
 - P1 Next.js receives only a constrained Gemini credential from the authenticated AWS API.
 - No Gemini secret may use a NEXT_PUBLIC_ prefix, enter a client bundle, appear in a fixture, or be logged.
 
@@ -189,6 +133,8 @@ References: [Live API](https://ai.google.dev/gemini-api/docs/live-api), [ephemer
 5. Only the access token is retained in an HttpOnly, SameSite=Lax cookie scoped to /api; refresh and ID tokens are discarded.
 6. Mutating BFF routes require an exact trusted Origin, JSON content type, bounded body, and strict schema.
 7. P1_API_URL is a fixed HTTPS origin; user input cannot select an upstream.
+
+The access tier comes only from the Cognito-signed `cognito:groups` claim. The parser accepts bracketed space-separated strings, JSON arrays, CSV, and arrays; owner takes precedence over guest and unrecognized claims resolve to none. The actual HTTP API claim format remains deployment verification item V4. `CONTACT_URL` is server-only configuration; `/api/auth/session` exposes only a validated HTTPS or mailto request-access link, and omits it when unset or invalid.
 
 Pages use a per-request nonce CSP. Production omits unsafe-eval; unsafe-inline remains limited to styles because Monaco injects runtime styles. The app also emits HSTS in production, frame denial, MIME sniffing prevention, strict referrer policy, restrictive Permissions Policy, COOP, and CORP.
 
@@ -242,6 +188,22 @@ The BFF exposes this at POST /api/interview-events.
 
 Current event types are question.started, question.completed, transcript.final, code.patch, code.snapshot, canvas.patch, canvas.snapshot, scenario.injected, execution.result, connection.reconnected, tool.call, provider.usage, and interview.completed.
 
+### Account API (read-only)
+
+All three routes require the Cognito JWT authorizer. Their BFF equivalents forward the cookie's access token, accept only allowlisted paths on the fixed `P1_API_URL` host, re-validate responses, disable caching, and never echo upstream error bodies.
+
+| AWS route | BFF route | Response |
+|---|---|---|
+| `GET /v1/me` | `GET /api/me` | Role (`owner`, `guest`, `none`) and voice/text quotas: `used`, `limit`, `globalRemaining`, UTC `resetsAt` |
+| `GET /v1/sessions` | `GET /api/sessions` | `items` with sessionId, createdAt, channel, track, level, questionTitle, status and optional overallScore; optional nextCursor |
+| `GET /v1/sessions/{sessionId}/report` | `GET /api/sessions/[id]/report` | Status (`pending`, `grading`, `complete`, `failed`), optional v1 report and gradedAt |
+
+The exact strict Zod contracts are in `src/lib/p1/account.ts` and `report.ts`. Report schema version 1 includes summary and competency scores with confidence, evidence references, feedback, and retry prompts. The overall score is the competency mean rounded to one decimal.
+
+History is newest first. `limit` defaults to 20 and is bounded to 1–50. Cursors are base64url `{PK, SK}` values: extra keys, foreign `USER#<sub>` partitions, non-history prefixes, and malformed input are rejected before querying. Report reads validate the ID and session ownership before reading the report; missing and other-user sessions both return the identical 404. Corrupt stored reports fail closed with a safe internal error.
+
+Ungrouped signed-in callers may read `/v1/me` with zero personal allowance; session creation returns `403 account_not_enabled`. Exhausted voice allowance returns `429 monthly_quota_exhausted`. Public demo behavior and account-read behavior are distinct.
+
 ## 9. DynamoDB model and consistency
 
 | Entity | PK | SK |
@@ -252,10 +214,13 @@ Current event types are question.started, question.completed, transcript.final, 
 | Report / grading lease | SESSION#sessionId | REPORT#P1#v1 |
 | Request idempotency | USER#cognito-sub | SESSION_REQUEST#key |
 | Short-lived session response | USER#cognito-sub | SESSION_RESPONSE#key |
-| Global quota | QUOTA#GLOBAL | MONTH#YYYY-MM |
-| User quota | QUOTA#USER#cognito-sub | MONTH#YYYY-MM |
+| Global quota | QUOTA#GLOBAL#VOICE or QUOTA#GLOBAL#TEXT | MONTH#YYYY-MM |
+| User quota | QUOTA#USER#cognito-sub#VOICE or ...#TEXT | MONTH#YYYY-MM |
+| Session history | USER#cognito-sub | SESSION#createdAtIso#sessionId |
 
-Session creation atomically increments both quota counters and writes idempotency/session records. Event writes atomically advance the sequence high-water mark and reserve sequence and event ID. The Cognito subject must match the session owner.
+Session creation atomically increments the global and user voice counters and writes idempotency, session, and history records. History starts active and META stores historySk; provisioning rollback removes the owned history item with the reservation. Accepted completion sets history to grading in the evidence transaction. The grader records graded/overallScore, or failed on the final SQS attempt. The report record is authoritative; history is a derived index and a failed history update must not repeat paid grading. The failure write cannot overwrite a complete report, and the SQS failure response still permits DLQ delivery. The queue and grader share GRADING_MAX_RECEIVE_COUNT=3. IAM grants the underlying item actions (PutItem/UpdateItem/DeleteItem/GetItem/Query), which DynamoDB checks inside transactions.
+
+Session creation preserves its original idempotency and conditional-write protections. Event writes atomically advance the sequence high-water mark and reserve sequence and event ID. The Cognito subject must match the session owner.
 
 A newly accepted completion event is queued for grading. An exact duplicate completion is also re-enqueued so a client retry repairs the DynamoDB-commit/SQS-send failure window. Before invoking Gemini, a worker conditionally creates a 90-second lease. Duplicate SQS delivery or concurrent workers therefore do not normally duplicate model spend; an expired lease permits recovery.
 
@@ -276,95 +241,67 @@ Add Aurora PostgreSQL only after join-heavy requirements such as organization en
 
 - P0 mock state stays in browser memory.
 - P1 persists transcript, code, canvas, scenario, usage, manifests, and reports in DynamoDB.
-- Evidence is retained until deletion, but user-facing delete/export is not implemented. P1 remains an access-controlled pilot, not a public production service.
-- Audio is not uploaded or stored by the current app.
-- The private S3 bucket prepares an opt-in recording boundary and deletes both current and noncurrent versions under recordings/ after 30 days; consent/upload code is deferred.
-- Operational logs and analytics must not receive content-bearing evidence or credentials.
+- Invited guests' evidence is retained until deletion; per-session deletion ships in Phase 2 and full account export remains deferred.
+- Audio is not recorded, uploaded, or stored by the application; there is no recording bucket or upload endpoint.
+- Operational logs and analytics must not receive interview content or credentials.
+- Phase 1 remains an invite-only pilot; general public use requires additional privacy and reliability work.
 
 ## 12. Observability
 
-The baseline is CloudWatch-native because the serverless resources have no Prometheus scrape requirement.
+Every stage has safe API access logs, strict Lambda JSON logs, native service metrics, and active X-Ray tracing. Access logs contain request ID, route, status, integration latency and response bytes, without headers or bodies. Lambda logs use hashed session references and allowlisted metadata, without interview content or credentials. Log retention is seven days outside production and 30 days in production.
 
-Implemented:
+Only `prod` (also recognized internally as `production`) creates:
 
-- API Gateway JSON access logs with request ID, route, status, integration latency, response bytes, and authorizer outcome; no headers or bodies.
-- Strict Lambda logs with safe results, durations, request/trace IDs, hashed session references, and allowlisted low-cardinality metadata.
-- EMF metrics written as root JSON documents directly to Lambda stdout for session setup, completion, grading latency/schema failures, invalid evidence references, and idempotency conflicts.
-- Native API Gateway, Lambda, DynamoDB, and SQS metrics.
-- One dashboard and 13 baseline alarms covering API errors/latency, Lambda errors/throttles, DynamoDB throttles/system errors, queue age, and DLQ depth.
-- Production adds three alias error alarms and CodeDeploy shifts 10% traffic for five minutes before completing each Lambda rollout; an alarm, failed deployment, or stopped deployment rolls back.
-- Seven-day non-production and 30-day production log retention.
-- Active X-Ray tracing.
+- Eight single-metric alarms: API 5xx; errors for the four Lambdas; DLQ depth; `grading_failed`; `session_setup_failed`. Every alarm notifies the SNS email topic configured with `ALERT_EMAIL`.
+- One dashboard and one $1 monthly AWS Budget, emailing at 80% forecast and 100% actual spend.
+- Eight emitted EMF metrics: `session_setup_ms`, `session_setup_failed`, `interview_completed`, `idempotency_conflict`, `grading_latency_ms`, `grading_schema_failure`, `evidence_reference_invalid`, `grading_failed`.
 
-Reconnect, provider-error, abandonment, and measured-cost metrics are reserved but not emitted end to end. OpenTelemetry SDK instrumentation, sampling rules, spend alarms, synthetic alarm exercises, and Grafana are deferred. Managed Prometheus should wait for stable Prometheus-native workloads.
+Four additional metric names are reserved, not emitted end to end: reconnect, provider-error, abandonment, and measured Gemini cost. The cap counts emitted metric/dimension combinations, not enum names; current call sites use fixed production/application dimensions. Never exceed 10 emitted custom metrics or 10 alarm metrics per account. EMF is written at the JSON root through stdout.
+
+Development has zero custom metrics, alarms, dashboards, or budgets. CDK assertions enforce the monitoring/resource limits. SNS and SQS require TLS. Live alarm delivery, subscription confirmation, budget configuration, and measured usage are owner-run deployment checks. BFF reads return sanitized errors; richer server-side proxy diagnostics are deferred.
 
 ## 13. Cost model
 
-Pricing is a dated estimate checked on 2026-09-01. Actual Gemini usage records and AWS/Vercel bills are authoritative. A Gemini API key has no fixed fee.
+The following numbers are the v2 spec's planning estimates, not measured bills or a guaranteed price ceiling. The objective is about $5/month all-in, with AWS near zero; quotas limit sessions rather than charging a fixed amount per session. Recheck provider prices (V5) and account-wide free-tier eligibility before deployment.
 
-### Current 10 × 10-minute indie pilot
+| Item | Expected/month | Planning worst case at caps |
+|---|---:|---:|
+| Gemini Live voice, at most 10 × 10 minutes | $3.00–4.50 | about $6.00 |
+| Gemini text, at most 60 sessions (Phase 2) | $0.10–0.60 | about $2.40 |
+| Gemini grading | < $0.25 | < $0.50 |
+| AWS application plane | $0.00–0.30 | < $1.00 |
+| Eligible Vercel Hobby | $0 | $0 |
+| **Total** | **about $3.35–5.65** | **about $9.90** |
 
-Assume each interview contains about 6.7 candidate-audio minutes and 2.2 interviewer-audio minutes.
+SSM standard Parameter Store replaces a recurring secret-store charge. Production-only monitoring is sized to the account's free-tier allowance; unrelated resources can consume that allowance. DynamoDB on-demand, PITR, logs, traces, and provider context rebilling still require billing verification.
 
-~~~text
-Per-session audio-only lower bound
-= 6.7 × $0.005 + 2.2 × $0.018
-≈ $0.073
+After the first month, measure voice cost per session; if it exceeds $0.40, lower `VOICE_GLOBAL_MONTHLY_LIMIT` to keep the expected total near $5. Google billing alerts at $3 and $5 and the $1 AWS Budget warn but do not stop spending. The atomic quotas and credential/session limits enforce usage caps.
 
-Ten-session audio-only lower bound ≈ $0.73/month
-~~~
+No WAF, NAT gateway, managed Grafana/Prometheus, Aurora, or always-on containers belong in this pilot. A future larger deployment needs a new measured cost model and architecture approval before caps rise.
 
-Accumulated context is rebilled, so plan **$3–$6/month** for Gemini Live across all ten sessions. Independent Flash-Lite grading should remain below **$0.25/month** at this volume.
-
-| Cost center | Ten-session estimate |
-|---|---:|
-| Vercel Hobby for an eligible student/non-commercial project | $0 |
-| Cognito direct email sign-in, no SMS | $0 at this volume |
-| API Gateway HTTP API | < $0.01 |
-| Lambda | < $0.01, usually free-tier covered |
-| DynamoDB on-demand | < $0.05 |
-| S3 and transfer | < $0.10; no audio uploads today |
-| SQS and DLQ | < $0.01 |
-| Secrets Manager | about $0.40 |
-| CloudWatch/X-Ray/dashboard/13 alarms/custom metrics | about $2–$6 |
-| **AWS application plane** | **about $2.50–$7/month** |
-| **Gemini + AWS + eligible Vercel Hobby** | **about $5.75–$13.25/month** |
-
-Do not add WAF, Managed Grafana, Managed Prometheus, NAT Gateway, Aurora, or always-on containers to the indie profile. Configure Google and AWS budget notifications before enabling the key. Quotas do not replace billing alerts.
-
-### Future 1,000 × 45-minute scenario
-
-This is a future model, not the deployable cap.
-
-| Cost center | Monthly estimate |
-|---|---:|
-| Gemini Live | $1,500–$1,800 |
-| Independent grading | $5–$15 |
-| AWS production stack | $32–$117 |
-| AWS all environments | $75–$200 |
-| Gemini-first all-in | $1,580–$2,015 |
-
-Before raising the cap, measure context rebilling, p95 latency, reconnect reliability, event volume, and grading quality. The future target remains below $2.50 per completed interview.
-
-References: [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing), [API Gateway](https://aws.amazon.com/api-gateway/pricing/), [Lambda](https://aws.amazon.com/lambda/pricing/), [DynamoDB](https://aws.amazon.com/dynamodb/pricing/), [CloudWatch](https://aws.amazon.com/cloudwatch/pricing/), and [Vercel](https://vercel.com/pricing).
+Price verification sources: [Gemini](https://ai.google.dev/gemini-api/docs/pricing), [AWS](https://aws.amazon.com/pricing/), and [Vercel](https://vercel.com/pricing).
 
 ## 14. CI/CD
 
-CI runs a frozen lockfile install, a moderate-or-higher audit across production and build dependencies, ESLint, TypeScript, Jest coverage, production build, a post-build client-secret scanner, infrastructure Jest/CDK synth, and Playwright Chromium. The browser test stubs only session provisioning, so the production server can retain its fail-closed P1 policy while the deterministic candidate journey remains free. CodeQL, pull-request dependency review, and grouped Dependabot updates are separate. Third-party actions are pinned to full commit SHAs, and pnpm enforces a one-day minimum package release age except for the exact reviewed Vercel CLI release set recorded in the lockfile.
+Use Node.js 22 and **pnpm 11.19.0 exactly**. Normal installs use `pnpm install --frozen-lockfile`; intentional dependency changes own a separate reviewed lockfile commit. The one-day release-age gate and exact reviewed exceptions remain enforced. Range overrides patch vulnerable js-yaml and smol-toml paths without lowering the moderate-severity audit threshold.
 
-deploy-p1-aws.yml accepts a successful trusted main push for automatic development deployment only when the repository variable P1_AWS_DEPLOY_ENABLED is exactly true; it remains dormant by default while credentials and environment variables are absent. A manually selected environment remains available and fails closed when its configuration is incomplete. The workflow uses GitHub OIDC, pins Singapore, revalidates hard caps, requires successful CI for every manually selected revision, tests/synthesizes/diffs before deploy, uploads artifacts, and verifies the API authorizer rejects an anonymous request. Production additionally requires a successful push-triggered CI run for that exact revision and should be protected by a required-reviewer GitHub environment.
+GitHub Actions has quality, infrastructure, and browser jobs. Quality runs the dependency audit, lint, typecheck, Jest coverage, production build, and client-bundle secret scan. Infrastructure runs tests and test-stage synthesis. Browser depends on both and runs the Chromium mock journey. Actions are SHA-pinned; CodeQL, dependency review, and Dependabot supplement CI. Require all three CI jobs green before merging lane PRs into `feature/v2-phase1` and before the owner approves the integration PR into `main`.
 
-Vercel is the primary web target. Automatic Vercel production deployment is disabled until an authenticated integration smoke and coordinated two-plane promotion/rollback exist; otherwise the production web could outrun the AWS contract. A manual release must deploy and validate the matching AWS production stack before promoting the web artifact. Vercel credentials must be scoped only to its CLI steps.
+Only GitHub environments `development` and `production` are used, mapping to CDK stages dev/prod. Development auto-deploys from a successful trusted main push only when `P1_AWS_DEPLOY_ENABLED=true`. Production is manual, main-only, reviewer-gated, and requires successful push CI on the selected revision. Leave automatic deployment disabled until the owner completes setup. GitHub OIDC supplies temporary AWS credentials.
 
-deploy-amplify.yml is manual-only and requires explicit Next.js 16 compatibility confirmation.
+Deployment inputs are AWS_DEPLOY_ROLE_ARN, AWS_REGION (ap-southeast-1), P1_ALLOWED_ORIGIN, the six VOICE/TEXT monthly-limit variables, VOICE_SESSION_MINUTES, and production secret ALERT_EMAIL. Optional P1_HEALTHCHECK_URL/P1_SMOKE_PATH configure the anonymous smoke. Cap validation runs during synthesis. The owner creates the stage SecureString separately; no standard Gemini key enters GitHub or Lambda environment variables.
+
+Deploy AWS before Vercel and keep `/v1` backward compatible. Vercel uses the manual exact-revision verify-then-promote workflow, with credentials scoped to CLI steps; there is no coordinated two-plane rollback. Cloud deployment and credential handling remain the owner's Task 16 checkpoint.
 
 ## 15. Testing contract
 
-No automated test may use a real Gemini key or incur provider spend.
+No automated test calls real AWS or Gemini. Mock SDK/provider boundaries; synthesize with stage=test. Task 15 verifies 87 application tests across 19 suites, 113 infrastructure tests across 11 suites, and one Chromium candidate journey. The integration PR records the exact verified revision and GitHub Actions results.
 
-Jest covers cost/state/report behavior; P1 schemas, quotas, idempotency and reordering; evidence retry behavior; redaction and metric cardinality; origin/body guards; PKCE/state/cookies; BFF routes and secret non-disclosure; grading deduplication and queue-loss recovery; and CDK auth, encryption, IAM, retention, logs, alarms, and recovery settings. The current local suite has 58 application tests and 23 infrastructure tests. Playwright adds one end-to-end candidate-flow test.
+Application tests cover lifecycle/cost/scorecards, evidence schemas/retries, account/report contracts, PKCE/state/cookies, origin/body guards, safe logs, BFF response validation, and secret non-disclosure. Infrastructure tests cover access policies and caps, idempotent reservations, history transactions, account IDOR/cursor isolation, grader outcomes and index-write failures, cached SSM reads, production-only EMF, and synthesized auth/IAM/monitoring restrictions.
 
-Playwright covers the full mock candidate flow, code/canvas tabs, scenario injection, completion, and report. Authenticated P1, real microphone/provider, reconnect, quota, and cloud-failure browser tests are post-deployment work.
+Playwright exercises one deterministic mock candidate journey using a stubbed session response against the production UI. Real microphone/provider behavior, Cognito claims, billing, and deployed permissions require the owner checkpoint. No mock test proves those live properties.
+
+Task 15 also reviews the Phase 1 diff against OWASP A01–A10. Existing source-size exceptions are interview-app.tsx (574 lines, split in Phase 2) and event-handler.ts (457 lines, existing near-limit exception). Hand-written config validation remains an explicit allowlist boundary. Broader BFF diagnostics and unused-type cleanup are deferred.
 
 ## 16. Acceptance and SLOs
 
@@ -388,9 +325,9 @@ Post-deployment targets:
 - p95 end-of-speech to first interviewer audio below 1.5 seconds;
 - at least 95% completion;
 - at least 99% planned reconnect success after reconnect UX ships; and
-- current-pilot spend below $25/month and future cost below $2.50/completed interview.
+- current-pilot expected spend around $5/month, measured after deployment and future cost below $2.50/completed interview.
 
-Required before public production: deletion/export, privacy consent, reconnect recovery, provider/authenticated E2E tests, budget alerts, abuse review, coordinated two-plane promotion/rollback, and a 25-concurrent-session load test.
+Required before public production: deletion/export, privacy consent, reconnect recovery, provider/authenticated E2E tests, budget alerts, abuse review, backward-compatible AWS-first promotion/rollback procedures, and a 25-concurrent-session load test.
 
 ## 17. Decision log
 
@@ -412,3 +349,12 @@ Required before public production: deletion/export, privacy consent, reconnect r
 | 2026-09-02 | Persist one short-lived response per idempotency key | Prevents retry races from minting multiple paid provider credentials |
 | 2026-09-02 | Re-enqueue duplicate completion evidence | Repairs the database-to-queue delivery gap while the grader lease deduplicates spend |
 | 2026-09-02 | Enforce dependency age, immutable actions, and moderate audit gates | Reduces CI supply-chain exposure, including development tooling |
+| 2026-09-24 | Keep Vercel + lean AWS; defer OpenNext | Least rework, keeps the AWS portfolio boundary |
+| 2026-09-24 | Invite-only Cognito owner/guest groups | Shareable access with bounded paid usage |
+| 2026-09-24 | Separate voice (≤10) and text (≤60) monthly allowances | Voice is scarce; text support arrives in Phase 2 |
+| 2026-09-24 | Replace Secrets Manager with SSM SecureString and five-minute cache | Reduce recurring costs while allowing key rotation |
+| 2026-09-24 | Prod-only monitoring: 8 alarms, 8 emitted metrics, SNS email, $1 budget | Free-tier allowances are account-wide; alarms need notification actions |
+| 2026-09-24 | Remove CodeDeploy canaries, staging, recording S3 bucket, and Amplify | Reduce unused solo-maintenance overhead |
+| 2026-09-24 | Grant underlying DynamoDB item actions | Transactions authorize their item operations, not a TransactWriteItems IAM action |
+| 2026-09-24 | Add ownership-checked account/report reads and derived history | Expose stored results while preserving tenant isolation and grading idempotency |
+| 2026-09-24 | Restore all CI gates before integration | Patch vulnerable build dependencies without bypassing audit policy |

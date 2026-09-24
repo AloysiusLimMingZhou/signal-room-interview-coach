@@ -37,6 +37,15 @@ describe("P1 deployment configuration", () => {
     expect(() => resolveP1Config({}, { VOICE_GUEST_MONTHLY_LIMIT: "0" })).toThrow(/positive integer/);
   });
 
+  it.each([
+    { VOICE_GLOBAL_MONTHLY_LIMIT: "5", VOICE_OWNER_MONTHLY_LIMIT: "6" },
+    { VOICE_GLOBAL_MONTHLY_LIMIT: "5", VOICE_OWNER_MONTHLY_LIMIT: "5", VOICE_GUEST_MONTHLY_LIMIT: "6" },
+    { TEXT_GLOBAL_MONTHLY_LIMIT: "20", TEXT_OWNER_MONTHLY_LIMIT: "21" },
+    { TEXT_GLOBAL_MONTHLY_LIMIT: "20", TEXT_OWNER_MONTHLY_LIMIT: "20", TEXT_GUEST_MONTHLY_LIMIT: "21" },
+  ])("rejects a role allowance above its channel limit: %p", (environment) => {
+    expect(() => resolveP1Config({}, environment)).toThrow(/global limit/);
+  });
+
   it("requires a valid alert email for production", () => {
     expect(() => resolveP1Config(prodContext, {})).toThrow(/ALERT_EMAIL/);
     expect(() => resolveP1Config(prodContext, { ALERT_EMAIL: "not-an-email" })).toThrow(/valid email/);
