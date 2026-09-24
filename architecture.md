@@ -258,7 +258,7 @@ Only `prod` (also recognized internally as `production`) creates:
 
 Four additional metric names are reserved, not emitted end to end: reconnect, provider-error, abandonment, and measured Gemini cost. The cap counts emitted metric/dimension combinations, not enum names; current call sites use fixed production/application dimensions. Never exceed 10 emitted custom metrics or 10 alarm metrics per account. EMF is written at the JSON root through stdout.
 
-Development has zero custom metrics, alarms, dashboards, or budgets. CDK assertions enforce the monitoring/resource limits. SNS and SQS require TLS. Live alarm delivery, subscription confirmation, budget configuration, and measured usage are owner-run deployment checks. BFF reads return sanitized errors; richer server-side proxy diagnostics are deferred.
+Development has zero custom metrics, alarms, dashboards, or budgets. CDK assertions enforce the monitoring/resource limits. SNS and SQS require TLS. Live alarm delivery, subscription confirmation, budget configuration, and measured usage are owner-run deployment checks. Failed BFF account reads log only a generated correlation ID, elapsed time, an allowlisted route category/failure reason, and optional upstream status. Logs omit session IDs, query values, exception messages, credentials, and payloads; clients still receive sanitized errors.
 
 ## 13. Cost model
 
@@ -295,13 +295,13 @@ Deploy AWS before Vercel and keep `/v1` backward compatible. Vercel uses the man
 
 ## 15. Testing contract
 
-No automated test calls real AWS or Gemini. Mock SDK/provider boundaries; synthesize with stage=test. Task 15 verifies 87 application tests across 19 suites, 113 infrastructure tests across 11 suites, and one Chromium candidate journey. The integration PR records the exact verified revision and GitHub Actions results.
+No automated test calls real AWS or Gemini. Mock SDK/provider boundaries; synthesize with stage=test. Task 15 verifies 90 application tests across 19 suites, 113 infrastructure tests across 11 suites, and one Chromium candidate journey. The integration PR records the exact verified revision and GitHub Actions results.
 
 Application tests cover lifecycle/cost/scorecards, evidence schemas/retries, account/report contracts, PKCE/state/cookies, origin/body guards, safe logs, BFF response validation, and secret non-disclosure. Infrastructure tests cover access policies and caps, idempotent reservations, history transactions, account IDOR/cursor isolation, grader outcomes and index-write failures, cached SSM reads, production-only EMF, and synthesized auth/IAM/monitoring restrictions.
 
 Playwright exercises one deterministic mock candidate journey using a stubbed session response against the production UI. Real microphone/provider behavior, Cognito claims, billing, and deployed permissions require the owner checkpoint. No mock test proves those live properties.
 
-Task 15 also reviews the Phase 1 diff against OWASP A01–A10. Existing source-size exceptions are interview-app.tsx (574 lines, split in Phase 2) and event-handler.ts (457 lines, existing near-limit exception). Hand-written config validation remains an explicit allowlist boundary. Broader BFF diagnostics and unused-type cleanup are deferred.
+Task 15 also reviews the Phase 1 diff against OWASP A01–A10. Existing source-size exceptions are interview-app.tsx (574 lines, split in Phase 2) and event-handler.ts (457 lines, existing near-limit exception). Hand-written config validation remains an explicit allowlist boundary. The unused idempotency type export is a cosmetic backend cleanup.
 
 ## 16. Acceptance and SLOs
 
@@ -358,3 +358,4 @@ Required before public production: deletion/export, privacy consent, reconnect r
 | 2026-09-24 | Grant underlying DynamoDB item actions | Transactions authorize their item operations, not a TransactWriteItems IAM action |
 | 2026-09-24 | Add ownership-checked account/report reads and derived history | Expose stored results while preserving tenant isolation and grading idempotency |
 | 2026-09-24 | Restore all CI gates before integration | Patch vulnerable build dependencies without bypassing audit policy |
+| 2026-09-24 | Add allowlisted BFF failure diagnostics | Correlate failed account reads without logging interview content, credentials, or resource identifiers |

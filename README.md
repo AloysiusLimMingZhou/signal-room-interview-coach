@@ -90,7 +90,7 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ~~~
 
-Tests mock AWS/Gemini boundaries and incur no provider spend. The suite has **87 application tests**, **113 infrastructure tests**, and **one Chromium candidate journey**. The browser test stubs session provisioning and exercises the production UI. See the integration PR for the exact verified revision and GitHub Actions results.
+Tests mock AWS/Gemini boundaries and incur no provider spend. The suite has **90 application tests**, **113 infrastructure tests**, and **one Chromium candidate journey**. The browser test stubs session provisioning and exercises the production UI. See the integration PR for the exact verified revision and GitHub Actions results.
 
 Regression coverage includes role/cap boundaries, raced session creation, cursor tampering, report ownership, corrupt reports, grading failures, best-effort history writes, read-only account permissions, exact CORS, SSM/KMS scope, and production monitoring. Real Cognito claims, audio behavior, deployed permissions, and billing remain manual checks.
 
