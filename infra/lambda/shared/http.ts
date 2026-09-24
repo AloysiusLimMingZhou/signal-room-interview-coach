@@ -32,6 +32,7 @@ export class SafeHttpError extends Error {
     public readonly errorCode: string,
     public readonly safeMessage: string,
     public readonly responseHeaders: Record<string, string> = {},
+    public readonly quotaDetails?: { channel: "voice" | "text"; scope: "user" | "global"; resetsAt: string },
   ) {
     super(errorCode);
     this.name = "SafeHttpError";
@@ -59,7 +60,7 @@ export function errorResponse(error: unknown): ApiResponse {
   if (error instanceof SafeHttpError) {
     return jsonResponse(
       error.statusCode,
-      { error: error.errorCode, message: error.safeMessage },
+      { error: error.errorCode, message: error.safeMessage, ...error.quotaDetails },
       error.responseHeaders,
     );
   }

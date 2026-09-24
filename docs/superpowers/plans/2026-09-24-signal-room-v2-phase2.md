@@ -17,6 +17,8 @@ The owner authorized local Phase 2 development while the Phase 1 deployment chec
 
 ## Provider evidence and unresolved live probes
 
+Progress: step 1 is integrated (PR #12). Step 2's session/evidence contracts, channel quotas and synth/runtime text settings are implemented; report-v2 work remains with step 4. The browser still uses the legacy session contract. Each following endpoint/UI slice must preserve this compatibility until the migration is complete.
+
 Official documentation checked 2026-09-24:
 
 - [Ephemeral tokens](https://ai.google.dev/gemini-api/docs/live-api/ephemeral-tokens) documents resumption within token expiry using the same token with uses=1. Preserve uses=1 and the 12-minute maximum credential lifetime; test actual pinned-model resumption during the owner checkpoint (V1).

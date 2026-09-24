@@ -6,7 +6,7 @@ Signal Room is a Gemini-first interview practice app. Transcript, code, and arch
 
 **Deployment state:** implemented and tested locally/through GitHub Actions; the owner-run first deployment checkpoint is still outstanding. The browser currently shows a deterministic scorecard. The stored Gemini report is available through the authenticated API; report/history UI and the real question-aware interview loop ship in Phase 2.
 
-**Phase 2 development:** the [implementation plan](./docs/superpowers/plans/2026-09-24-signal-room-v2-phase2.md), ten versioned Coding/Behavioral questions, question selection, and shared voice/text interviewer builder are in place. These foundations are tested independently; wiring them into sessions and the web experience is the next step.
+**Phase 2 development:** ten versioned Coding/Behavioral questions and the shared interviewer are wired into the AWS session endpoint. Text setup reserves its own allowance without issuing a token; voice credentials bind the selected question. Evidence supports both channels' durations and five coding languages. Text generation, report v2, and the web experience are next in the [implementation plan](./docs/superpowers/plans/2026-09-24-signal-room-v2-phase2.md).
 
 [architecture.md](./architecture.md) is the source of truth for boundaries, contracts, security, costs, and deployment. The [v2 spec](./docs/superpowers/specs/2026-09-15-signal-room-v2-design.md) and [Phase 1 plan](./docs/superpowers/plans/2026-09-16-signal-room-v2-phase1.md) describe the roadmap and checkpoint.
 
@@ -92,7 +92,7 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ~~~
 
-Tests mock AWS/Gemini boundaries and incur no provider spend. The suite has **98 application tests**, **118 infrastructure tests**, **four interviewer snapshots**, and **one Chromium candidate journey**. The browser test stubs session provisioning and exercises the production UI. See the integration PR for the exact verified revision and GitHub Actions results.
+Tests mock AWS/Gemini boundaries and incur no provider spend. The suite has **114 application tests**, **140 infrastructure tests**, **four interviewer snapshots**, and **one Chromium candidate journey**. The browser test stubs session provisioning and exercises the production UI. See the integration PR for the exact verified revision and GitHub Actions results.
 
 Regression coverage includes role/cap boundaries, raced session creation, cursor tampering, report ownership, corrupt reports, grading failures, best-effort history writes, read-only account permissions, exact CORS, SSM/KMS scope, and production monitoring. Real Cognito claims, audio behavior, deployed permissions, and billing remain manual checks.
 

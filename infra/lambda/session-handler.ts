@@ -37,6 +37,7 @@ import {
 } from "./shared/http";
 import { baseLogMetadata, emitMetric, hashReference, writeSafeLog } from "./shared/logging";
 import { historySortKey } from "./shared/table-keys";
+import { createV2Session } from "./session-v2-handler";
 
 const OPERATION = "session.create" as const;
 const REQUEST_REPLAY_WINDOW_MS = 2 * 60_000;
@@ -114,7 +115,11 @@ export async function handler(event: ApiGatewayV2Event): Promise<ApiResponse> {
     if (role === "none") {
       throw new SafeHttpError(403, "account_not_enabled", "This account has not been enabled. Access is invite-only.");
     }
-    const parsed = sessionRequestSchema.safeParse(parseJsonRequest(event, 8 * 1_024));
+    const body = parseJsonRequest(event, 8 * 1_024);
+    if (body && typeof body === "object" && "channel" in body) {
+      return await createV2Session({ event, body, tableName, userId, role });
+    }
+    const parsed = sessionRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new SafeHttpError(400, "invalid_request", "Choose a supported track and difficulty.");
     }

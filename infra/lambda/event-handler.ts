@@ -1,5 +1,6 @@
+import { assertCompletionDuration, loadSessionState, type SessionState } from "./event-state";
 import { SendMessageCommand } from "@aws-sdk/client-sqs";
-import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
+import { TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import { fingerprintInterviewEvent, validateIdempotentAppend } from "../../src/lib/p1/events";
 import {
   documentClient,
@@ -9,7 +10,6 @@ import {
 } from "./shared/aws-clients";
 import {
   appendEventBatchSchema,
-  interviewEventSchema,
   type AppendEventBatch,
   type GradingMessage,
   type InterviewEvent,
@@ -24,35 +24,7 @@ import {
   type ApiResponse,
 } from "./shared/http";
 import { baseLogMetadata, emitMetric, hashReference, writeSafeLog } from "./shared/logging";
-import { HISTORY_SORT_PREFIX, historyKey } from "./shared/table-keys";
-
-interface SessionRecord {
-  sessionId?: unknown;
-  userId?: unknown;
-  lastSequence?: unknown;
-  eventCount?: unknown;
-  sessionEndsAt?: unknown;
-  historySk?: unknown;
-  status?: unknown;
-}
-
-interface StoredEventRecord {
-  eventId?: unknown;
-  sessionId?: unknown;
-  sequence?: unknown;
-  occurredAt?: unknown;
-  eventType?: unknown;
-  payload?: unknown;
-}
-
-interface SessionState {
-  lastSequence: number;
-  eventCount: number;
-  sessionEndsAt: string;
-  status: "created" | "completed";
-  historySk?: string;
-  events: InterviewEvent[];
-}
+import { historyKey } from "./shared/table-keys";
 
 const OPERATION = "event.append" as const;
 const MAX_APPEND_ATTEMPTS = 3;
@@ -61,84 +33,6 @@ export const PILOT_MAX_APPEND_GRACE_SECONDS = 120;
 
 function eventSortKey(event: InterviewEvent): string {
   return `EVENT#${String(event.sequence).padStart(16, "0")}`;
-}
-
-function asInterviewEvent(item: StoredEventRecord): InterviewEvent | undefined {
-  const parsed = interviewEventSchema.safeParse({
-    id: item.eventId,
-    sessionId: item.sessionId,
-    sequence: item.sequence,
-    occurredAt: item.occurredAt,
-    type: item.eventType,
-    payload: item.payload,
-  });
-  return parsed.success ? parsed.data : undefined;
-}
-
-async function loadSessionState(
-  tableName: string,
-  sessionId: string,
-  userId: string,
-): Promise<SessionState> {
-  const sessionResponse = await documentClient.send(new GetCommand({
-    TableName: tableName,
-    Key: { PK: `SESSION#${sessionId}`, SK: "META" },
-    ConsistentRead: true,
-    ProjectionExpression: "sessionId, userId, lastSequence, eventCount, sessionEndsAt, historySk, #status",
-    ExpressionAttributeNames: { "#status": "status" },
-  }));
-  const session = sessionResponse.Item as SessionRecord | undefined;
-  if (session?.sessionId !== sessionId || session.userId !== userId) {
-    throw new SafeHttpError(404, "session_not_found", "The interview session was not found.");
-  }
-  if (typeof session.lastSequence !== "number" || !Number.isSafeInteger(session.lastSequence)) {
-    throw new Error("Session sequence state is invalid.");
-  }
-  if (session.status !== "created" && session.status !== "completed") {
-    throw new Error("Session lifecycle state is invalid.");
-  }
-  if (typeof session.sessionEndsAt !== "string" || !Number.isFinite(Date.parse(session.sessionEndsAt))) {
-    throw new Error("Session end time is invalid.");
-  }
-  if (
-    session.eventCount !== undefined &&
-    (typeof session.eventCount !== "number" ||
-      !Number.isSafeInteger(session.eventCount) ||
-      session.eventCount < 0)
-  ) {
-    throw new Error("Session event count is invalid.");
-  }
-
-  const stored: InterviewEvent[] = [];
-  let exclusiveStartKey: Record<string, unknown> | undefined;
-  do {
-    const response = await documentClient.send(new QueryCommand({
-      TableName: tableName,
-      KeyConditionExpression: "PK = :pk AND begins_with(SK, :eventPrefix)",
-      ExpressionAttributeValues: { ":pk": `SESSION#${sessionId}`, ":eventPrefix": "EVENT#" },
-      ProjectionExpression: "eventId, sessionId, sequence, occurredAt, eventType, payload",
-      ConsistentRead: true,
-      ExclusiveStartKey: exclusiveStartKey,
-    }));
-    for (const item of response.Items ?? []) {
-      const event = asInterviewEvent(item as StoredEventRecord);
-      if (!event) throw new Error("Stored interview event failed its canonical schema.");
-      stored.push(event);
-    }
-    exclusiveStartKey = response.LastEvaluatedKey;
-    if (stored.length > 5_000) throw new Error("Session event count exceeds the supported pilot bound.");
-  } while (exclusiveStartKey);
-
-  return {
-    lastSequence: session.lastSequence,
-    eventCount: typeof session.eventCount === "number" ? session.eventCount : stored.length,
-    sessionEndsAt: session.sessionEndsAt,
-    status: session.status,
-    historySk: typeof session.historySk === "string" && session.historySk.startsWith(HISTORY_SORT_PREFIX)
-      ? session.historySk
-      : undefined,
-    events: stored,
-  };
 }
 
 export function assertSessionAcceptsNewEvents(input: {
@@ -260,6 +154,7 @@ async function transactAppend(input: AppendTransactionInput): Promise<void> {
 }
 
 function validateAgainstState(batch: AppendEventBatch, state: SessionState) {
+  assertCompletionDuration(batch.events, state.durationMinutes);
   const requestedIds = new Set(batch.events.map((event) => event.id));
   const requestedSequences = new Set(batch.events.map((event) => event.sequence));
   const relevantExisting = state.events

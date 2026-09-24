@@ -88,7 +88,7 @@ When `P1_API_URL` is unset in development/test, the BFF retains the local P0 pat
 | Web | Next.js 16 App Router, React 19, TypeScript, project-owned CSS | Implemented |
 | Lifecycle/workbench | XState, Monaco, lightweight structured canvas | Implemented |
 | Provider boundary | Deterministic mock and Gemini adapters | Implemented |
-| Phase 2 foundations | Ten versioned Coding/Behavioral questions, selection, shared interviewer instructions | Implemented and unit-tested; session wiring follows |
+| Phase 2 backend | Ten versioned questions, shared interviewer, channel-aware session creation and evidence | Implemented; text generation, report v2 and web integration follow |
 | Hosting | Vercel frontend plus AWS Singapore backend | First deployment remains Task 16 |
 | Application plane | CDK, HTTP API, four ARM Node.js 22 Lambdas: session/event/grader/account | Implemented, not deployed |
 | Identity | Cognito Hosted UI, code + PKCE, invite-only owner/guest groups | Implemented, not deployed |
@@ -127,7 +127,7 @@ References: [Live API](https://ai.google.dev/gemini-api/docs/live-api), [ephemer
 
 ### Phase 2 question and interviewer foundation
 
-The owner authorized local Phase 2 development while the real deployment checkpoint remains pending. The [Phase 2 plan](./docs/superpowers/plans/2026-09-24-signal-room-v2-phase2.md) records the implementation sequence and live verification gaps. This foundation does not yet change session creation or the visible interview tracks.
+The owner authorized local Phase 2 development while the real deployment checkpoint remains pending. The [Phase 2 plan](./docs/superpowers/plans/2026-09-24-signal-room-v2-phase2.md) records the implementation sequence and live verification gaps. The AWS session endpoint accepts the additive v2 contract; the BFF and visible interview tracks still use the legacy contract until their integration slice.
 
 `content/questions/<track>/<slug>.v<n>.json` contains five Coding and five Behavioral questions, each supporting new-grad, mid and senior. Strict Zod schemas validate versioned IDs, track-specific artifacts, level anchors and unique competencies. The full bank is imported only under the Lambda boundary. The public projection includes only ID, title, prompt, selected language and starter code; rubrics, hints, follow-ups and twists stay server-side. Keep old question versions available for stored sessions.
 
@@ -150,6 +150,16 @@ The access tier comes only from the Cognito-signed `cognito:groups` claim. The p
 Pages use a per-request nonce CSP. Production omits unsafe-eval; unsafe-inline remains limited to styles because Monaco injects runtime styles. The app also emits HSTS in production, frame denial, MIME sniffing prevention, strict referrer policy, restrictive Permissions Policy, COOP, and CORP.
 
 ## 8. Provider-neutral API contracts
+
+### Phase 2 session and evidence contract
+
+POST /v1/realtime/sessions selects the new contract when `channel` is present. The strict request includes `channel: voice | text`, `track: coding | behavioral`, `level: new-grad | mid | senior`, `providerPreference: gemini`, and optional duration (voice defaults to 10 minutes; text to 30). Coding accepts JavaScript, TypeScript, Python (default), Java or C++; Behavioral rejects language fields. Voice cannot exceed 10 minutes; text cannot exceed 30. Configured lower limits are also enforced.
+
+The Lambda selects a question from the caller's latest twenty history rows. One conditional transaction reserves global/user quota, the request key, session metadata and history. Text includes the replay response in that transaction, immediately enters created state, and never reads a Gemini key or provisions a token. Voice enters provisioning, binds the selected question/shared instruction and coding view_code declaration into the one-use credential, then conditionally saves its response and enters created state. Failed voice setup uses the existing guarded compensation; uncertain compensation retains quota conservatively.
+
+Both channels return only the public question projection. Text returns maxTurns (at most 40) and no token; voice returns the constrained credential and resume settings. Exact retries within two minutes return the stored descriptor without reserving again. Changed requests conflict; pending/expired requests cannot create another session under the same key. Quota denials include only channel, user/global scope and UTC reset time. Session IAM adds Query for caller-partition history selection. Text model defaults to gemini-2.5-flash-lite. TEXT_SESSION_MINUTES, TEXT_MAX_TURNS and TEXT_MAX_TURN_CHARS are bounded to 30/40/4,000 at synth and runtime; turn enforcement follows with the text service.
+
+Evidence accepts versioned question IDs alongside legacy UUIDs, Java/C++ artifacts, follow-up-constraint/behavioral-probe twists, and connection-lost completion. The wire schema permits at most thirty minutes of completion evidence; the append handler additionally enforces the actual stored duration and rejects corrupted voice limits. Session state loading is separated from append transactions without weakening their conditions. Existing legacy requests/reports remain supported. No new text turn route or report-v2 behavior is implied by this session slice.
 
 ### POST /v1/realtime/sessions
 
@@ -308,13 +318,13 @@ Deploy AWS before Vercel and keep `/v1` backward compatible. Vercel uses the man
 
 ## 15. Testing contract
 
-No automated test calls real AWS or Gemini. Mock SDK/provider boundaries; synthesize with stage=test. The Phase 2 foundation extends the suite to 98 application tests across 21 suites, 118 infrastructure tests across 12 suites, four interviewer snapshots, and one Chromium candidate journey. The integration PR records the exact verified revision and GitHub Actions results.
+No automated test calls real AWS or Gemini. Mock SDK/provider boundaries; synthesize with stage=test. The Phase 2 session slice extends the suite to 114 application tests across 23 suites, 140 infrastructure tests across 16 suites, four interviewer snapshots, and one Chromium candidate journey. The integration PR records the exact verified revision and GitHub Actions results.
 
 Application tests cover lifecycle/cost/scorecards, evidence schemas/retries, account/report contracts, PKCE/state/cookies, origin/body guards, safe logs, BFF response validation, and secret non-disclosure. Infrastructure tests cover access policies and caps, idempotent reservations, history transactions, account IDOR/cursor isolation, grader outcomes and index-write failures, cached SSM reads, production-only EMF, and synthesized auth/IAM/monitoring restrictions.
 
 Playwright exercises one deterministic mock candidate journey using a stubbed session response against the production UI. Real microphone/provider behavior, Cognito claims, billing, and deployed permissions require the owner checkpoint. No mock test proves those live properties.
 
-Task 15 also reviews the Phase 1 diff against OWASP A01–A10. Existing source-size exceptions are interview-app.tsx (574 lines, split in Phase 2) and event-handler.ts (457 lines, existing near-limit exception). Hand-written config validation remains an explicit allowlist boundary. The unused idempotency type export is removed without changing its return contract.
+Task 15 also reviews the Phase 1 diff against OWASP A01–A10. The remaining source-size exception is interview-app.tsx (574 lines, split in Phase 2); event state loading is now separated from its handler. Hand-written config validation remains an explicit allowlist boundary. The unused idempotency type export is removed without changing its return contract.
 
 ## 16. Acceptance and SLOs
 
@@ -373,3 +383,4 @@ Required before public production: deletion/export, privacy consent, reconnect r
 | 2026-09-24 | Restore all CI gates before integration | Patch vulnerable build dependencies without bypassing audit policy |
 | 2026-09-24 | Add allowlisted BFF failure diagnostics | Correlate failed account reads without logging interview content, credentials, or resource identifiers |
 | 2026-09-24 | Begin Phase 2 with a server-only versioned question bank and shared interviewer (D4–D6) | Build and test the interview foundation while keeping real deployment/provider checks explicit |
+| 2026-09-24 | Add channel-aware session setup and per-session evidence duration checks | Reserve text/voice quotas atomically, bind voice questions at credential issuance, and support text duration without relaxing voice limits; retain legacy contracts during web migration |
