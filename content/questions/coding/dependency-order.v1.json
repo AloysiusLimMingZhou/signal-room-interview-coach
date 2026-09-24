@@ -1,0 +1,106 @@
+{
+  "id": "coding.dependency-order.v1",
+  "track": "coding",
+  "levels": [
+    "new-grad",
+    "mid",
+    "senior"
+  ],
+  "title": "Order dependent build tasks",
+  "prompt": "There are taskCount tasks numbered 0 through taskCount - 1. Each dependency [a, b] means task a must run before task b. Return any ordering that runs every task after its prerequisites, or an empty list if a cycle makes that impossible. Dependencies contain no duplicate pairs. For taskCount = 4 and dependencies = [[0, 2], [1, 2], [2, 3]], [0, 1, 2, 3] is valid. Include tasks with no dependencies.",
+  "starterCode": {
+    "python": "def dependency_order(task_count: int, dependencies: list[list[int]]) -> list[int]:\n    pass\n",
+    "javascript": "function dependencyOrder(taskCount, dependencies) {\n  // Return a valid order, or [] for a cycle.\n}\n",
+    "typescript": "function dependencyOrder(taskCount: number, dependencies: [number, number][]): number[] {\n  return [];\n}\n",
+    "java": "import java.util.*;\n\nclass Solution {\n    public int[] dependencyOrder(int taskCount, int[][] dependencies) {\n        return new int[0];\n    }\n}\n",
+    "cpp": "#include <vector>\nusing namespace std;\n\nvector<int> dependencyOrder(int taskCount, const vector<vector<int>>& dependencies) {\n    return {};\n}\n"
+  },
+  "followUps": [
+    "How will your algorithm detect a cycle?",
+    "How are disconnected tasks included?",
+    "What is the cost in terms of tasks and dependencies?"
+  ],
+  "twist": {
+    "kind": "follow-up-constraint",
+    "prompt": "Several tasks can run at once. Return the earliest parallel execution round for each task when every task takes one round."
+  },
+  "hints": [
+    "Represent the prerequisites as a directed graph.",
+    "Consider which tasks can run before anything else has finished.",
+    "Track what changes for a task when one prerequisite completes."
+  ],
+  "rubric": [
+    {
+      "competencyId": "problem-solving",
+      "name": "Problem solving",
+      "anchors": {
+        "new-grad": {
+          "strong": "Clarifies the task and explains a workable approach; with reasonable prompts, includes all tasks and distinguishes cycles from disconnected components.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently clarifies the task and explains a workable approach; includes all tasks and distinguishes cycles from disconnected components, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively clarifies the task and explains a workable approach; includes all tasks and distinguishes cycles from disconnected components, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "correctness",
+      "name": "Correctness",
+      "anchors": {
+        "new-grad": {
+          "strong": "Checks examples and boundaries; with reasonable prompts, includes all tasks and distinguishes cycles from disconnected components.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently checks examples and boundaries; includes all tasks and distinguishes cycles from disconnected components, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively checks examples and boundaries; includes all tasks and distinguishes cycles from disconnected components, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "complexity",
+      "name": "Complexity and trade-offs",
+      "anchors": {
+        "new-grad": {
+          "strong": "Explains time and space costs; with reasonable prompts, includes all tasks and distinguishes cycles from disconnected components.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently explains time and space costs; includes all tasks and distinguishes cycles from disconnected components, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively explains time and space costs; includes all tasks and distinguishes cycles from disconnected components, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "communication",
+      "name": "Communication",
+      "anchors": {
+        "new-grad": {
+          "strong": "Explains decisions and responds to probes; with reasonable prompts, includes all tasks and distinguishes cycles from disconnected components.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently explains decisions and responds to probes; includes all tasks and distinguishes cycles from disconnected components, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively explains decisions and responds to probes; includes all tasks and distinguishes cycles from disconnected components, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    }
+  ]
+}

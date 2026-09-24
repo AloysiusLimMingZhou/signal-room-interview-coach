@@ -8,7 +8,7 @@ import { historyKey, sessionMetaKey } from "./shared/table-keys";
 
 type TransactItem = NonNullable<TransactWriteCommandInput["TransactItems"]>[number];
 
-export interface IdempotencyRecord {
+interface IdempotencyRecord {
   createdAt?: unknown;
   requestHash?: unknown;
   sessionId?: unknown;
