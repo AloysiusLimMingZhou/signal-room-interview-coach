@@ -117,6 +117,11 @@ describe("lean P1 infrastructure", () => {
     const account = Object.values(functions).find((fn) => fn.Properties.FunctionName === "signal-room-account-test")!;
     const accountRole = account.Properties.Role["Fn::GetAtt"][0];
     const policies = Object.values(synthesized.findResources("AWS::IAM::Policy"));
+    const session = Object.values(functions).find((fn) => fn.Properties.FunctionName === "signal-room-session-test")!;
+    expect(session.Properties.Environment.Variables).toMatchObject({ TEXT_SESSION_MINUTES: "30", TEXT_MAX_TURNS: "40", TEXT_MAX_TURN_CHARS: "4000" });
+    const sessionRole = session.Properties.Role["Fn::GetAtt"][0];
+    const sessionPolicy = policies.find((policy) => policy.Properties.Roles.some((role: { Ref: string }) => role.Ref === sessionRole))!;
+    expect(sessionPolicy.Properties.PolicyDocument.Statement.find((grant: { Sid?: string }) => grant.Sid === "InterviewTableAccess").Action).toContain("dynamodb:Query");
     const accountPolicy = policies.find((policy) => policy.Properties.Roles.some((role: { Ref: string }) => role.Ref === accountRole))!;
     const grants = accountPolicy.Properties.PolicyDocument.Statement;
     const tableGrant = grants.find((grant: { Sid?: string }) => grant.Sid === "InterviewTableAccess");

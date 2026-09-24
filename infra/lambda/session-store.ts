@@ -110,7 +110,7 @@ export async function assertQuotaLikelyAvailable(
   }
 }
 
-function quotaIncrement(tableName: string, key: ItemKey, limit: number, now: string, expiresAt: number): TransactItem {
+export function quotaIncrement(tableName: string, key: ItemKey, limit: number, now: string, expiresAt: number): TransactItem {
   return {
     Update: {
       TableName: tableName,

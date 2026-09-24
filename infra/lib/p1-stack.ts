@@ -21,12 +21,14 @@ import {
 } from "./access-policy";
 import { addProductionObservability } from "./observability";
 import { isProductionStage } from "./p1-config";
+import { TEXT_HARD_LIMITS, textLimitEnvironment, validateTextLimits, type TextLimits } from "./text-limits";
 
 export interface P1StackProps extends StackProps {
   stageName: string;
   allowedOrigin: string;
   allowances?: AllowanceLimits;
   voiceSessionMinutes?: number;
+  textLimits?: TextLimits;
   alertEmail?: string;
 }
 
@@ -58,6 +60,7 @@ export class P1Stack extends Stack {
     const removalPolicy = isProduction ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
     const allowances = validateAllowanceLimits(props.allowances ?? DEFAULT_ALLOWANCE_LIMITS);
     const voiceSessionMinutes = props.voiceSessionMinutes ?? HARD_LIMITS.voiceSessionMinutes;
+    const textLimits = validateTextLimits(props.textLimits ?? TEXT_HARD_LIMITS);
 
     if (props.allowedOrigin === "*") throw new Error("allowedOrigin must be explicit.");
     if (voiceSessionMinutes > HARD_LIMITS.voiceSessionMinutes) {
@@ -162,8 +165,10 @@ export class P1Stack extends Stack {
       environment: {
         ...baseEnvironment,
         ...allowanceEnvironment(allowances),
+        ...textLimitEnvironment(textLimits),
         GEMINI_KEY_PARAMETER_NAME: geminiKeyParameterName,
         GEMINI_LIVE_MODEL: "gemini-3.1-flash-live-preview",
+        GEMINI_TEXT_MODEL: "gemini-2.5-flash-lite",
         VOICE_SESSION_MINUTES: String(voiceSessionMinutes),
       },
     });
@@ -202,6 +207,7 @@ export class P1Stack extends Stack {
     // DynamoDB authorizes transactions by their underlying item actions.
     this.grantTableActions(sessionFunction.role, table, [
       "dynamodb:GetItem",
+      "dynamodb:Query",
       "dynamodb:PutItem",
       "dynamodb:UpdateItem",
       "dynamodb:DeleteItem",

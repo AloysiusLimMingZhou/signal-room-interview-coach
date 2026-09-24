@@ -1,10 +1,12 @@
 import { HARD_LIMITS, readAllowanceLimits, type AllowanceLimits } from "./access-policy";
+import { readTextLimits, type TextLimits } from "./text-limits";
 
 export interface P1Config {
   stageName: string;
   allowedOrigin: string;
   allowances: AllowanceLimits;
   voiceSessionMinutes: number;
+  textLimits: TextLimits;
   alertEmail?: string;
 }
 
@@ -90,6 +92,7 @@ export function resolveP1Config(
     allowedOrigin: assertAllowedOrigin(rawOrigin, stageName),
     allowances,
     voiceSessionMinutes,
+    textLimits: readTextLimits((name, fallback) => positiveInteger(environment[name], fallback, name)),
     alertEmail: resolveAlertEmail(context.alertEmail ?? environment.ALERT_EMAIL, stageName),
   };
 }
