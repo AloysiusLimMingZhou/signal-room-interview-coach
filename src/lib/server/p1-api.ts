@@ -2,14 +2,15 @@ import "server-only";
 
 const MAX_UPSTREAM_RESPONSE_BYTES = 128 * 1024;
 const P1_API_PATH =
-  /^\/v1\/(?:realtime\/sessions|interview-events|me|sessions|sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/report)$/;
+  /^\/v1\/(?:realtime\/sessions|interview-events|me|sessions|sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(?:report|turn))$/;
 
 export type P1ApiPath =
   | "/v1/realtime/sessions"
   | "/v1/interview-events"
   | "/v1/me"
   | "/v1/sessions"
-  | `/v1/sessions/${string}/report`;
+  | `/v1/sessions/${string}/report`
+  | `/v1/sessions/${string}/turn`;
 
 function getP1ApiOrigin(): URL | undefined {
   const configured = process.env.P1_API_URL?.trim();
@@ -39,6 +40,7 @@ export async function callP1Api(input: {
   query?: Record<string, string>;
   requestId: string;
   idempotencyKey?: string;
+  timeoutMs?: 10_000 | 25_000;
 }): Promise<{ ok: boolean; status: number; payload: unknown }> {
   const base = getP1ApiOrigin();
   if (!base) throw new Error("P1 API is not configured");
@@ -61,7 +63,7 @@ export async function callP1Api(input: {
     ...(method === "POST" ? { body: JSON.stringify(input.body) } : {}),
     cache: "no-store",
     redirect: "error",
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(input.timeoutMs ?? 10_000),
   });
 
   const declaredLength = Number.parseInt(response.headers.get("content-length") ?? "0", 10);

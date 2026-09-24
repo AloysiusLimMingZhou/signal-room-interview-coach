@@ -6,7 +6,7 @@ Signal Room is a Gemini-first interview practice app. Transcript, code, and arch
 
 **Deployment state:** implemented and tested locally/through GitHub Actions; the owner-run first deployment checkpoint is still outstanding. The browser currently shows a deterministic scorecard. The stored Gemini report is available through the authenticated API; report/history UI and the real question-aware interview loop ship in Phase 2.
 
-**Phase 2 development:** ten versioned Coding/Behavioral questions and the shared interviewer are wired into the AWS session endpoint. Text setup reserves its own allowance without issuing a token; voice credentials bind the selected question. Evidence supports both channels' durations and five coding languages. Text generation, report v2, and the web experience are next in the [implementation plan](./docs/superpowers/plans/2026-09-24-signal-room-v2-phase2.md).
+**Phase 2 development:** ten versioned Coding/Behavioral questions and the shared interviewer are wired into session creation. The authenticated text-turn API uses server-owned context, bounded generation attempts and exact replay; the BFF supports both channels. Voice credentials bind the selected question. Evidence supports both durations and five coding languages. The room/adapter migration, report v2 and history UI are next in the [implementation plan](./docs/superpowers/plans/2026-09-24-signal-room-v2-phase2.md).
 
 [architecture.md](./architecture.md) is the source of truth for boundaries, contracts, security, costs, and deployment. The [v2 spec](./docs/superpowers/specs/2026-09-15-signal-room-v2-design.md) and [Phase 1 plan](./docs/superpowers/plans/2026-09-16-signal-room-v2-phase1.md) describe the roadmap and checkpoint.
 
@@ -68,6 +68,7 @@ Optional developer-only Live mode uses a server-only `GEMINI_API_KEY` in an igno
 | BFF route | Purpose |
 |---|---|
 | `GET /api/me` | Signed-in role and voice/text allowances with UTC reset time |
+| `POST /api/sessions/[id]/turn` | Authenticated text generation with bounded workspace/context and idempotent replay |
 | `GET /api/sessions?limit=20&cursor=...` | Newest-first session history, maximum 50 items per page |
 | `GET /api/sessions/[id]/report` | `pending`, `grading`, `complete`, or `failed`; version 1 report when complete |
 
@@ -92,7 +93,7 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ~~~
 
-Tests mock AWS/Gemini boundaries and incur no provider spend. The suite has **114 application tests**, **140 infrastructure tests**, **four interviewer snapshots**, and **one Chromium candidate journey**. The browser test stubs session provisioning and exercises the production UI. See the integration PR for the exact verified revision and GitHub Actions results.
+Tests mock AWS/Gemini boundaries and incur no provider spend. The suite has **119 application tests**, **159 infrastructure tests**, **four interviewer snapshots**, and **one Chromium candidate journey**. The browser test stubs session provisioning and exercises the production UI. See each section's PR for the exact verified revision and GitHub Actions results.
 
 Regression coverage includes role/cap boundaries, raced session creation, cursor tampering, report ownership, corrupt reports, grading failures, best-effort history writes, read-only account permissions, exact CORS, SSM/KMS scope, and production monitoring. Real Cognito claims, audio behavior, deployed permissions, and billing remain manual checks.
 
@@ -147,7 +148,7 @@ Run Task 16 after the integration PR is approved and merged into `main`. Agents 
 
 6. Check `/api/me` returns `owner` (verification V4). Complete a real voice interview, then use `/api/sessions` and `/api/sessions/<id>/report` to confirm a complete report and graded history. Record setup/grading latency. Verify a guest's third voice session is rejected and an ungrouped account gets the invite-only 403. Use dev for these quota tests.
 
-7. Create the prod SecureString, configure the production environment below, deploy AWS first, confirm the SNS email subscription, and then deploy Vercel with the exact production origin. Verify all five API routes require authentication and the account/report flow works.
+7. Create the prod SecureString, configure the production environment below, deploy AWS first, confirm the SNS email subscription, and then deploy Vercel with the exact production origin. Verify all six API routes require authentication and the account/report flow works.
 
 8. Configure a Google billing budget with $3/$5 alerts and restrict the key to the Generative Language API. Verify the $1 AWS Budget and alarm delivery. Record results and outstanding probes in an architecture decision-log PR; do not record keys, tokens, or interview content.
 
@@ -173,7 +174,7 @@ For Vercel, configure production variables `VERCEL_ORG_ID`/`VERCEL_PROJECT_ID` a
 
 The v2 spec estimates roughly **$3.35–5.65/month**, with a planning worst case around **$9.90** at the caps. These are estimates, not measured bills or a guaranteed dollar ceiling. Voice is expected to dominate; the text allowance is reserved for Phase 2. Verify current pricing and account-wide AWS free-tier usage at deployment.
 
-Production has eight single-metric alarms, one dashboard, and eight emitted custom metrics; four metric names are reserved and not emitted. Development emits no custom metrics and creates no alarms/dashboard/budget. The maximum is 10 alarm metrics and 10 emitted custom metric/dimension combinations per account.
+Production has nine single-metric alarms, one dashboard, and eight emitted custom metrics; four metric names are reserved and not emitted. Development emits no custom metrics and creates no alarms/dashboard/budget. The maximum is 10 alarm metrics and 10 emitted custom metric/dimension combinations per account. Text sessions permit at most 40 generation attempts; failures/timeouts consume an attempt so retries cannot evade the budget.
 
 After the first month, lower the global voice cap if measured cost exceeds $0.40/session. Budgets notify; they do not stop spending. The browser stops at ten wall-clock minutes, with a provider credential ceiling of twelve minutes including reconnect margin. See [architecture.md](./architecture.md) for the cost table and boundaries.
 
@@ -182,5 +183,5 @@ Audio is not recorded or uploaded. Invited users' evidence and reports remain in
 ## Next steps
 
 1. Complete the owner-run Task 16 deployment checkpoint and record actual results.
-2. Continue the Phase 2 plan: wire the question bank/shared interviewer, `view_code`, text channel, real report/history UI, and deletion; incorporate the owner's live verification results before claiming deployment readiness.
+2. Continue the Phase 2 plan: adapters/room, `view_code`, real report/history UI, and deletion; incorporate the owner's live verification results before claiming deployment readiness. Commit/push each finished section and merge only through a PR with passing CI, as required by the repository ruleset.
 3. Add Phase 3 differentiators: grader evaluations, browser Python tests, delivery analytics, measured operational metrics, and a real-session demo replay.

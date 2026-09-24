@@ -126,4 +126,27 @@ describe("POST /api/realtime/session", () => {
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({ error: "account_not_enabled" });
   });
+
+  it("proxies a v2 text session and rejects private or mismatched upstream descriptors", async () => {
+    process.env.P1_API_URL = "https://api.example.com";
+    (getAccessToken as jest.Mock).mockResolvedValue("mock-access-token");
+    const body = { channel: "text", track: "coding", level: "mid", providerPreference: "gemini" };
+    const saved = { channel: "text", sessionId: "6a27e013-3d62-4828-a38d-177c0212399e", provider: "gemini", model: "gemini-2.5-flash-lite", persistence: "aws", maxDurationMinutes: 30, maxTurns: 40, expiresAt: "2026-09-24T12:30:00Z", question: { id: "coding.rolling-window-mode.v1", title: "Rolling window", prompt: "Find the mode.", language: "python", starterCode: "" } };
+    const fetcher = jest.spyOn(global, "fetch").mockResolvedValue(Response.json(saved));
+    const result = await POST(request(body));
+    expect(result.status).toBe(200); expect(await result.json()).toEqual(saved);
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toMatchObject({ channel: "text", language: "python", durationMinutes: 30 });
+    fetcher.mockResolvedValue(Response.json({ ...saved, question: { ...saved.question, rubric: "private" } }));
+    expect((await POST(request(body))).status).toBe(503);
+    fetcher.mockResolvedValue(Response.json({ ...saved, question: { ...saved.question, language: "java" } }));
+    expect((await POST(request(body))).status).toBe(503);
+  });
+
+  it("requires the protected API for v2 sessions instead of falling into local key mode", async () => {
+    delete process.env.P1_API_URL;
+    process.env.GEMINI_API_KEY = "mock-local-key";
+    const fetcher = jest.spyOn(global, "fetch").mockRejectedValue(new Error("Unexpected provider call"));
+    expect((await POST(request({ channel: "text", track: "behavioral", level: "mid", providerPreference: "gemini" }))).status).toBe(503);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 });

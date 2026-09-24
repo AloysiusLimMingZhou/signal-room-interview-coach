@@ -6,7 +6,7 @@
 
 **Owner:** Project engineering
 
-**Target:** P0 local prototype plus v2 Phase 1 invite-only pilot (lean AWS)
+**Target:** P0 local prototype, v2 Phase 1 invite-only pilot, and Phase 2 backend foundations (lean AWS)
 **Deployment state:** Implemented and locally verified; cloud resources are not yet deployed
 
 ## 1. Authority and change policy
@@ -35,7 +35,7 @@ Without credentials or cloud services, candidates can choose system-design, ML-d
 - Read-only account APIs for role/allowances, session history, and stored grading reports. The browser still renders the immediate deterministic scorecard; report/history UI ships in Phase 2.
 - Production-only alarms, dashboard, custom metrics, SNS email notifications, and a monthly AWS budget.
 
-`infra/lib/access-policy.ts` defines shared limits for synthesis and Lambda runtime validation; atomic DynamoDB conditions enforce voice reservations. Raising a hard cap is an architecture change. The future text endpoint must reserve its counters atomically before use.
+`infra/lib/access-policy.ts` defines shared limits for synthesis and Lambda runtime validation; atomic DynamoDB conditions enforce both channel reservations. Raising a hard cap is an architecture change. Text generation additionally reserves a bounded attempt before each paid call.
 
 Webcam, emotion/accent scoring, covert proctoring, payments, server-side arbitrary code execution, and mobile delivery remain excluded. Phase 2 introduces Coding/Behavioral tracks, a real question-aware interview loop, text interviews, report/history UI, and session deletion.
 
@@ -61,6 +61,10 @@ flowchart LR
   API --> Session[Session Lambda]
   API --> Events[Event Lambda]
   API --> Account[Account Lambda]
+  API --> Turn[Text turn Lambda]
+  Turn --> DB
+  Turn --> Parameter
+  Turn --> Text[Gemini Flash-Lite interviewer]
   Session --> DB[(DynamoDB single table)]
   Events --> DB
   Account --> DB
@@ -74,7 +78,7 @@ flowchart LR
   Grader --> Grade[Gemini text grader]
   Grader --> DB
   API --> Logs[Safe logs and X-Ray]
-  Monitor[Prod: 8 alarms, dashboard, SNS email, $1 budget]
+  Monitor[Prod: 9 alarms, dashboard, SNS email, $1 budget]
 ~~~
 
 `/api/me`, `/api/sessions`, and `/api/sessions/[id]/report` proxy authenticated GETs to the Account Lambda. Session creation and evidence append use authenticated POST routes. Audio never traverses API Gateway or Lambda.
@@ -88,14 +92,14 @@ When `P1_API_URL` is unset in development/test, the BFF retains the local P0 pat
 | Web | Next.js 16 App Router, React 19, TypeScript, project-owned CSS | Implemented |
 | Lifecycle/workbench | XState, Monaco, lightweight structured canvas | Implemented |
 | Provider boundary | Deterministic mock and Gemini adapters | Implemented |
-| Phase 2 backend | Ten versioned questions, shared interviewer, channel-aware session creation and evidence | Implemented; text generation, report v2 and web integration follow |
+| Phase 2 backend | Ten questions, shared interviewer, channel-aware sessions, evidence and text generation | Implemented; report v2 and room integration follow |
 | Hosting | Vercel frontend plus AWS Singapore backend | First deployment remains Task 16 |
-| Application plane | CDK, HTTP API, four ARM Node.js 22 Lambdas: session/event/grader/account | Implemented, not deployed |
+| Application plane | CDK, HTTP API, five ARM Node.js 22 Lambdas: session/event/grader/account/turn | Implemented, not deployed |
 | Identity | Cognito Hosted UI, code + PKCE, invite-only owner/guest groups | Implemented, not deployed |
 | Online data | DynamoDB on-demand single table; SQS + DLQ for grading | Implemented, not deployed |
 | Secrets | SSM standard SecureString, AWS-managed `aws/ssm` key | Owner creates one parameter per stage |
 | Object storage | No deployed recording bucket or upload path | Deferred until recording consent |
-| Operations | Prod: 8 alarm metrics, 1 dashboard, 8 emitted custom metrics, SNS email, $1 budget | Implemented; live validation pending |
+| Operations | Prod: 9 alarm metrics, 1 dashboard, 8 emitted custom metrics, SNS email, $1 budget | Implemented; live validation pending |
 | Lambda releases | Direct function deployments; AWS before Vercel; backward-compatible `/v1` | Implemented |
 | Reports/history | Account read API implemented; visible AI report and history pages | UI deferred to Phase 2 |
 | Analytics and richer canvas | Offline analytics, React Flow, measured delivery metrics | Later phases |
@@ -115,7 +119,7 @@ No cloud deployment or billing result is implied by local tests. Phase 1 exit cr
 Credential boundaries:
 
 - Local P0 Live mode: POST /api/realtime/session may read GEMINI_API_KEY.
-- P1 session and grader Lambdas read `/signal-room/<stage>/gemini-api-key` from SSM SecureString using `GEMINI_KEY_PARAMETER_NAME`, with decryption and a five-minute per-container cache.
+- Session, grader and text-turn Lambdas read `/signal-room/<stage>/gemini-api-key` from SSM SecureString using `GEMINI_KEY_PARAMETER_NAME`, with decryption and a five-minute per-container cache.
 - P1 Next.js receives only a constrained Gemini credential from the authenticated AWS API.
 - No Gemini secret may use a NEXT_PUBLIC_ prefix, enter a client bundle, appear in a fixture, or be logged.
 
@@ -127,7 +131,7 @@ References: [Live API](https://ai.google.dev/gemini-api/docs/live-api), [ephemer
 
 ### Phase 2 question and interviewer foundation
 
-The owner authorized local Phase 2 development while the real deployment checkpoint remains pending. The [Phase 2 plan](./docs/superpowers/plans/2026-09-24-signal-room-v2-phase2.md) records the implementation sequence and live verification gaps. The AWS session endpoint accepts the additive v2 contract; the BFF and visible interview tracks still use the legacy contract until their integration slice.
+The owner authorized Phase 2 development and section-by-section PR merges to main after CI, while the real deployment checkpoint remains pending. The [Phase 2 plan](./docs/superpowers/plans/2026-09-24-signal-room-v2-phase2.md) records the implementation sequence and live verification gaps. AWS and the BFF accept the additive v2 session contract; the visible room still uses the legacy contract until its integration slice.
 
 `content/questions/<track>/<slug>.v<n>.json` contains five Coding and five Behavioral questions, each supporting new-grad, mid and senior. Strict Zod schemas validate versioned IDs, track-specific artifacts, level anchors and unique competencies. The full bank is imported only under the Lambda boundary. The public projection includes only ID, title, prompt, selected language and starter code; rubrics, hints, follow-ups and twists stay server-side. Keep old question versions available for stored sessions.
 
@@ -157,9 +161,19 @@ POST /v1/realtime/sessions selects the new contract when `channel` is present. T
 
 The Lambda selects a question from the caller's latest twenty history rows. One conditional transaction reserves global/user quota, the request key, session metadata and history. Text includes the replay response in that transaction, immediately enters created state, and never reads a Gemini key or provisions a token. Voice enters provisioning, binds the selected question/shared instruction and coding view_code declaration into the one-use credential, then conditionally saves its response and enters created state. Failed voice setup uses the existing guarded compensation; uncertain compensation retains quota conservatively.
 
-Both channels return only the public question projection. Text returns maxTurns (at most 40) and no token; voice returns the constrained credential and resume settings. Exact retries within two minutes return the stored descriptor without reserving again. Changed requests conflict; pending/expired requests cannot create another session under the same key. Quota denials include only channel, user/global scope and UTC reset time. Session IAM adds Query for caller-partition history selection. Text model defaults to gemini-2.5-flash-lite. TEXT_SESSION_MINUTES, TEXT_MAX_TURNS and TEXT_MAX_TURN_CHARS are bounded to 30/40/4,000 at synth and runtime; turn enforcement follows with the text service.
+Both channels return only the public question projection. Text returns maxTurns (at most 40) and no token; voice returns the constrained credential and resume settings. Exact retries within two minutes return the stored descriptor without reserving again. Changed requests conflict; pending/expired requests cannot create another session under the same key. Quota denials include only channel, user/global scope and UTC reset time. Session IAM adds Query for caller-partition history selection. Text uses gemini-2.5-flash-lite. TEXT_SESSION_MINUTES, TEXT_MAX_TURNS and TEXT_MAX_TURN_CHARS are bounded to 30/40/4,000 at synth and runtime. V2 BFF session creation requires the protected API and checks returned track/channel/language/duration; it never falls through to unauthenticated local-key mode.
 
-Evidence accepts versioned question IDs alongside legacy UUIDs, Java/C++ artifacts, follow-up-constraint/behavioral-probe twists, and connection-lost completion. The wire schema permits at most thirty minutes of completion evidence; the append handler additionally enforces the actual stored duration and rejects corrupted voice limits. Session state loading is separated from append transactions without weakening their conditions. Existing legacy requests/reports remain supported. No new text turn route or report-v2 behavior is implied by this session slice.
+Evidence accepts versioned question IDs alongside legacy UUIDs, Java/C++ artifacts, follow-up-constraint/behavioral-probe twists, and connection-lost completion. The wire schema permits at most thirty minutes of completion evidence; the append handler additionally enforces the actual stored duration and rejects corrupted voice limits. Session state loading is separated from append transactions without weakening their conditions. Existing legacy requests/reports remain supported; report-v2 behavior follows separately.
+
+### POST /v1/sessions/{sessionId}/turn
+
+The JWT-protected text endpoint is exposed through POST /api/sessions/[id]/turn. Strict requests contain a UUID turnId, kind (start/candidate/twist/time-warning), candidate text only for candidate turns, and optional workspace (session language, revision, at most 12,000 code characters). Clients cannot supply history. Start occurs once; twists and final-minute warnings each occur at most once. Ownership is checked before replay; missing and differently owned sessions return identical 404s, and disabled accounts cannot generate. Successful responses include turnId, turnIndex, bounded interviewerText and usage; an explicit twist response additionally contains only the public twist kind/prompt for evidence capture. Voice twist transport still follows with the adapter slice.
+
+Before generation, one transaction reserves a 30-second session lease and increments textGenerationCount, guarded by ownership, open status, remaining time, expected textTurnCount, and the configured limit. The Lambda timeout is 20 seconds, shorter than its lease; provider timeout is 10 seconds, and BFF timeout is 25 seconds. The lease prevents overlapping paid calls. Both successful turns and generation attempts are capped at 40. A provider failure/timeout conservatively consumes an attempt: retrying cannot create unbounded paid calls. This intentionally strengthens the spec's post-generation transaction. Provider calls lack an exactly-once guarantee after ambiguous failures; retries can spend another bounded attempt.
+
+The model receives only server-stored prior turns (newest context fitting 24,000 JSON characters, restored to chronological order), the shared question instruction and JSON-delimited untrusted candidate/workspace data. Flash-Lite is allowlisted, temperature is 0.6, output is capped at 1,024 tokens/8,000 characters, and no tools execute. A conditional transaction advances the turn counter and persists history plus the exact replay response. Matching retries return that response without a second model call; changed bodies conflict. An uncertain commit is re-read before reporting a conflict. Provider failures return fixed 502 text and release only the matching lease; failed cleanup leaves a bounded lease and consumed attempt. Logs contain only generated request correlation, hashed session reference, result and duration.
+
+The text Lambda has GetItem/Query/PutItem/UpdateItem on the single table and stage-scoped SSM decryption, with reserved concurrency two. It adds one built-in Lambda error alarm, bringing prod to nine single-metric alarms without new emitted custom metrics. The browser room/adapter migration is separate; no real-session readiness is implied by endpoint tests.
 
 ### POST /v1/realtime/sessions
 
@@ -232,6 +246,8 @@ Ungrouped signed-in callers may read `/v1/me` with zero personal allowance; sess
 | Session manifest | SESSION#sessionId | META |
 | Evidence event | SESSION#sessionId | EVENT#zero-padded-sequence |
 | Event-ID reservation | SESSION#sessionId | EVENT_ID#eventId |
+| Text conversation turn | SESSION#sessionId | TEXT_TURN#four-digit-index |
+| Text turn lease/replay | SESSION#sessionId | TEXT_TURN_ID#turnId |
 | Report / grading lease | SESSION#sessionId | REPORT#P1#v1 |
 | Request idempotency | USER#cognito-sub | SESSION_REQUEST#key |
 | Short-lived session response | USER#cognito-sub | SESSION_RESPONSE#key |
@@ -239,7 +255,7 @@ Ungrouped signed-in callers may read `/v1/me` with zero personal allowance; sess
 | User quota | QUOTA#USER#cognito-sub#VOICE or ...#TEXT | MONTH#YYYY-MM |
 | Session history | USER#cognito-sub | SESSION#createdAtIso#sessionId |
 
-Session creation atomically increments the global and user voice counters and writes idempotency, session, and history records. History starts active and META stores historySk; provisioning rollback removes the owned history item with the reservation. Accepted completion sets history to grading in the evidence transaction. The grader records graded/overallScore, or failed on the final SQS attempt. The report record is authoritative; history is a derived index and a failed history update must not repeat paid grading. The failure write cannot overwrite a complete report, and the SQS failure response still permits DLQ delivery. The queue and grader share GRADING_MAX_RECEIVE_COUNT=3. IAM grants the underlying item actions (PutItem/UpdateItem/DeleteItem/GetItem/Query), which DynamoDB checks inside transactions.
+Session creation atomically increments the selected channel's global and user counters and writes idempotency, session, and history records. History starts active and META stores historySk; voice provisioning rollback removes the owned history item with the reservation. Accepted completion sets history to grading in the evidence transaction. The grader records graded/overallScore, or failed on the final SQS attempt. The report record is authoritative; history is a derived index and a failed history update must not repeat paid grading. The failure write cannot overwrite a complete report, and the SQS failure response still permits DLQ delivery. The queue and grader share GRADING_MAX_RECEIVE_COUNT=3. IAM grants the underlying item actions (PutItem/UpdateItem/DeleteItem/GetItem/Query), which DynamoDB checks inside transactions.
 
 Session creation preserves its original idempotency and conditional-write protections. Event writes atomically advance the sequence high-water mark and reserve sequence and event ID. The Cognito subject must match the session owner.
 
@@ -273,7 +289,7 @@ Every stage has safe API access logs, strict Lambda JSON logs, native service me
 
 Only `prod` (also recognized internally as `production`) creates:
 
-- Eight single-metric alarms: API 5xx; errors for the four Lambdas; DLQ depth; `grading_failed`; `session_setup_failed`. Every alarm notifies the SNS email topic configured with `ALERT_EMAIL`.
+- Nine single-metric alarms: API 5xx; errors for the five Lambdas; DLQ depth; `grading_failed`; `session_setup_failed`. Every alarm notifies the SNS email topic configured with `ALERT_EMAIL`.
 - One dashboard and one $1 monthly AWS Budget, emailing at 80% forecast and 100% actual spend.
 - Eight emitted EMF metrics: `session_setup_ms`, `session_setup_failed`, `interview_completed`, `idempotency_conflict`, `grading_latency_ms`, `grading_schema_failure`, `evidence_reference_invalid`, `grading_failed`.
 
@@ -308,7 +324,7 @@ Use Node.js 22 and **pnpm 11.19.0 exactly**. Normal installs use `pnpm install -
 
 GitHub Actions has quality, infrastructure, and browser jobs. Quality runs the dependency audit, lint, typecheck, Jest coverage, production build, and client-bundle secret scan. Infrastructure runs tests and test-stage synthesis. Browser depends on both and runs the Chromium mock journey. Actions are SHA-pinned; CodeQL, dependency review, and Dependabot supplement CI. Require all three CI jobs green before merging lane PRs into `feature/v2-phase1` and before the owner approves the integration PR into `main`.
 
-Phase 2 uses a separate `feature/v2-phase2` integration branch based on the verified Phase 1 tree. Its lane PRs use the same three CI gates, and merging either phase into main still requires owner approval. Keep deployment disabled until the owner completes the manual checkpoint.
+The first Phase 2 foundations used `feature/v2-phase2` and landed in main through PR #14 after all checks passed. The owner now explicitly authorizes each completed Phase 2 section to be committed, pushed on its branch, and merged into main through a PR after CI. Follow the repository ruleset; never push directly to main or bypass its PR requirement. No separate reviewer approval is configured for this solo project. Keep deployment disabled until the owner completes the manual checkpoint.
 
 Only GitHub environments `development` and `production` are used, mapping to CDK stages dev/prod. Development auto-deploys from a successful trusted main push only when `P1_AWS_DEPLOY_ENABLED=true`. Production is manual, main-only, reviewer-gated, and requires successful push CI on the selected revision. Leave automatic deployment disabled until the owner completes setup. GitHub OIDC supplies temporary AWS credentials.
 
@@ -318,7 +334,7 @@ Deploy AWS before Vercel and keep `/v1` backward compatible. Vercel uses the man
 
 ## 15. Testing contract
 
-No automated test calls real AWS or Gemini. Mock SDK/provider boundaries; synthesize with stage=test. The Phase 2 session slice extends the suite to 114 application tests across 23 suites, 140 infrastructure tests across 16 suites, four interviewer snapshots, and one Chromium candidate journey. The integration PR records the exact verified revision and GitHub Actions results.
+No automated test calls real AWS or Gemini. Mock SDK/provider boundaries; synthesize with stage=test. The Phase 2 text slice extends the suite to 119 application tests across 24 suites, 159 infrastructure tests across 18 suites, four interviewer snapshots, and one Chromium candidate journey. Each section's PR records the exact verified revision and GitHub Actions results.
 
 Application tests cover lifecycle/cost/scorecards, evidence schemas/retries, account/report contracts, PKCE/state/cookies, origin/body guards, safe logs, BFF response validation, and secret non-disclosure. Infrastructure tests cover access policies and caps, idempotent reservations, history transactions, account IDOR/cursor isolation, grader outcomes and index-write failures, cached SSM reads, production-only EMF, and synthesized auth/IAM/monitoring restrictions.
 
@@ -384,3 +400,6 @@ Required before public production: deletion/export, privacy consent, reconnect r
 | 2026-09-24 | Add allowlisted BFF failure diagnostics | Correlate failed account reads without logging interview content, credentials, or resource identifiers |
 | 2026-09-24 | Begin Phase 2 with a server-only versioned question bank and shared interviewer (D4–D6) | Build and test the interview foundation while keeping real deployment/provider checks explicit |
 | 2026-09-24 | Add channel-aware session setup and per-session evidence duration checks | Reserve text/voice quotas atomically, bind voice questions at credential issuance, and support text duration without relaxing voice limits; retain legacy contracts during web migration |
+| 2026-09-24 | Reserve a text lease and generation attempt before calling Flash-Lite; never refund uncertain attempts | Prevent concurrent duplicate generation and bound retry spend to 40 attempts per session; preserve exact successful replay |
+| 2026-09-24 | Add authenticated text turns and a fifth Lambda with one alarm | Server-owned bounded context, strict BFF validation and nine prod alarm metrics; keep room migration and live verification explicit |
+| 2026-09-24 | Merge completed Phase 2 sections through green PRs into main | Owner-authorized workflow and repository ruleset; no direct main pushes or automatic deployment |

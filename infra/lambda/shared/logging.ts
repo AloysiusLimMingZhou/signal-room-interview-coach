@@ -9,7 +9,7 @@ import {
 
 const safeLogSchema = z.object({
   level: z.enum(["INFO", "WARN", "ERROR"]),
-  operation: z.enum(["session.create", "event.append", "grading.run", "account.read"]),
+  operation: z.enum(["session.create", "event.append", "grading.run", "account.read", "text.turn"]),
   result: z.enum([
     "success",
     "invalid_request",

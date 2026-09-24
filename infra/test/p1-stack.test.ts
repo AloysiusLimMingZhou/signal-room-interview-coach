@@ -62,6 +62,7 @@ describe("lean P1 infrastructure", () => {
     const routeKeys = [
       "POST /v1/realtime/sessions",
       "POST /v1/interview-events",
+      "POST /v1/sessions/{sessionId}/turn",
       "GET /v1/me",
       "GET /v1/sessions",
       "GET /v1/sessions/{sessionId}/report",
@@ -83,7 +84,7 @@ describe("lean P1 infrastructure", () => {
   it("keeps secrets and interview content out of Lambda configuration and API logs", () => {
     const synthesized = template();
     const functions = synthesized.findResources("AWS::Lambda::Function");
-    expect(Object.keys(functions)).toHaveLength(4);
+    expect(Object.keys(functions)).toHaveLength(5);
     let keyAwareFunctions = 0;
     for (const resource of Object.values(functions)) {
       const serialized = JSON.stringify(resource);
@@ -92,7 +93,7 @@ describe("lean P1 infrastructure", () => {
       if (serialized.includes("GEMINI_KEY_PARAMETER_NAME")) keyAwareFunctions += 1;
       expect(resource.Properties.TracingConfig).toEqual({ Mode: "Active" });
     }
-    expect(keyAwareFunctions).toBe(2);
+    expect(keyAwareFunctions).toBe(3);
 
     const stage = Object.values(synthesized.findResources("AWS::ApiGatewayV2::Stage"))[0];
     const format = String(stage.Properties.AccessLogSettings.Format);
@@ -120,6 +121,14 @@ describe("lean P1 infrastructure", () => {
     const session = Object.values(functions).find((fn) => fn.Properties.FunctionName === "signal-room-session-test")!;
     expect(session.Properties.Environment.Variables).toMatchObject({ TEXT_SESSION_MINUTES: "30", TEXT_MAX_TURNS: "40", TEXT_MAX_TURN_CHARS: "4000" });
     const sessionRole = session.Properties.Role["Fn::GetAtt"][0];
+    const turn = Object.values(functions).find((fn) => fn.Properties.FunctionName === "signal-room-turn-test")!;
+    expect(turn.Properties.Timeout).toBe(20);
+    expect(turn.Properties.ReservedConcurrentExecutions).toBe(2);
+    expect(turn.Properties.Environment.Variables).toMatchObject({ TEXT_MAX_TURNS: "40", TEXT_MAX_TURN_CHARS: "4000" });
+    const turnRole = turn.Properties.Role["Fn::GetAtt"][0];
+    const turnPolicy = policies.find((policy) => policy.Properties.Roles.some((role: { Ref: string }) => role.Ref === turnRole))!;
+    expect(turnPolicy.Properties.PolicyDocument.Statement.find((grant: { Sid?: string }) => grant.Sid === "InterviewTableAccess").Action)
+      .toEqual(["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
     const sessionPolicy = policies.find((policy) => policy.Properties.Roles.some((role: { Ref: string }) => role.Ref === sessionRole))!;
     expect(sessionPolicy.Properties.PolicyDocument.Statement.find((grant: { Sid?: string }) => grant.Sid === "InterviewTableAccess").Action).toContain("dynamodb:Query");
     const accountPolicy = policies.find((policy) => policy.Properties.Roles.some((role: { Ref: string }) => role.Ref === accountRole))!;
@@ -131,14 +140,14 @@ describe("lean P1 infrastructure", () => {
 
     const statements = policies.flatMap((policy) => policy.Properties.PolicyDocument.Statement);
     const parameterGrants = statements.filter((grant) => grant.Sid === "GeminiKeyParameterRead");
-    expect(parameterGrants).toHaveLength(2);
+    expect(parameterGrants).toHaveLength(3);
     for (const grant of parameterGrants) {
       expect(grant.Action).toBe("ssm:GetParameter");
       expect(JSON.stringify(grant.Resource)).toContain("parameter/signal-room/test/gemini-api-key");
       expect(JSON.stringify(grant.Resource)).not.toContain("*");
     }
     const decryptGrants = statements.filter((grant) => grant.Sid === "GeminiKeyDecryptViaSsm");
-    expect(decryptGrants).toHaveLength(2);
+    expect(decryptGrants).toHaveLength(3);
     for (const grant of decryptGrants) {
       expect(grant.Action).toBe("kms:Decrypt");
       expect(grant.Condition).toEqual({ StringEquals: { "kms:ViaService": "ssm.ap-southeast-1.amazonaws.com" } });
@@ -167,7 +176,7 @@ describe("lean P1 infrastructure", () => {
 
   it("keeps production monitoring inside the CloudWatch free tier and notifies by email", () => {
     const production = template("prod");
-    production.resourceCountIs("AWS::CloudWatch::Alarm", 8);
+    production.resourceCountIs("AWS::CloudWatch::Alarm", 9);
     expect(alarmMetricCount(production)).toBeLessThanOrEqual(10);
     production.resourceCountIs("AWS::CloudWatch::Dashboard", 1);
     production.resourceCountIs("AWS::Budgets::Budget", 1);

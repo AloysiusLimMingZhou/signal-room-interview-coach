@@ -58,6 +58,7 @@ export const textTurnRequestSchema = z.discriminatedUnion("kind", [
 export const textTurnResponseSchema = z.object({
   turnId: z.string().uuid(), turnIndex: z.number().int().min(1).max(TEXT_MAX_TURNS),
   interviewerText: z.string().trim().min(1).max(8_000),
+  twist: z.object({ kind: z.enum(["follow-up-constraint", "behavioral-probe"]), prompt: z.string().min(1).max(4_000) }).strict().optional(),
   usage: z.object({
     inputTokens: z.number().int().nonnegative().max(1_000_000),
     outputTokens: z.number().int().nonnegative().max(1_000_000),
