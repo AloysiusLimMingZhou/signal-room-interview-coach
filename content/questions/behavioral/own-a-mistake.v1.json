@@ -1,0 +1,95 @@
+{
+  "id": "behavioral.own-a-mistake.v1",
+  "track": "behavioral",
+  "levels": [
+    "new-grad",
+    "mid",
+    "senior"
+  ],
+  "title": "Take responsibility for a mistake",
+  "prompt": "Describe a mistake you made on a project and how you handled it. A class or personal project is a valid example. Explain the impact, your own actions, and what changed afterward.",
+  "followUps": [
+    "How and when did you communicate the mistake?",
+    "What did you do to reduce its impact?",
+    "What evidence shows your prevention step worked?"
+  ],
+  "twist": {
+    "kind": "behavioral-probe",
+    "prompt": "Suppose you discover the mistake just before a deadline and fixing it risks missing that deadline. How do you communicate the trade-off?"
+  },
+  "hints": [],
+  "rubric": [
+    {
+      "competencyId": "ownership",
+      "name": "Ownership",
+      "anchors": {
+        "new-grad": {
+          "strong": "Distinguishes personal actions from team actions; with reasonable prompts, owns a specific mistake, mitigates impact and improves the process.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently distinguishes personal actions from team actions; owns a specific mistake, mitigates impact and improves the process, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively distinguishes personal actions from team actions; owns a specific mistake, mitigates impact and improves the process, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "judgment",
+      "name": "Judgment",
+      "anchors": {
+        "new-grad": {
+          "strong": "Explains choices and trade-offs; with reasonable prompts, owns a specific mistake, mitigates impact and improves the process.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently explains choices and trade-offs; owns a specific mistake, mitigates impact and improves the process, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively explains choices and trade-offs; owns a specific mistake, mitigates impact and improves the process, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "collaboration",
+      "name": "Collaboration",
+      "anchors": {
+        "new-grad": {
+          "strong": "Communicates respectfully with the people affected; with reasonable prompts, owns a specific mistake, mitigates impact and improves the process.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently communicates respectfully with the people affected; owns a specific mistake, mitigates impact and improves the process, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively communicates respectfully with the people affected; owns a specific mistake, mitigates impact and improves the process, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "reflection",
+      "name": "Reflection",
+      "anchors": {
+        "new-grad": {
+          "strong": "Connects results to specific lessons and subsequent changes; with reasonable prompts, owns a specific mistake, mitigates impact and improves the process.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently connects results to specific lessons and subsequent changes; owns a specific mistake, mitigates impact and improves the process, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively connects results to specific lessons and subsequent changes; owns a specific mistake, mitigates impact and improves the process, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    }
+  ]
+}

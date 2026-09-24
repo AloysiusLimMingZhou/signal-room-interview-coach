@@ -1,0 +1,95 @@
+{
+  "id": "behavioral.work-through-ambiguity.v1",
+  "track": "behavioral",
+  "levels": [
+    "new-grad",
+    "mid",
+    "senior"
+  ],
+  "title": "Make progress with unclear requirements",
+  "prompt": "Tell me about a project where the requirements were unclear. How did you decide what to do first, check your assumptions, and know whether the result was useful?",
+  "followUps": [
+    "Which assumption was most risky, and how did you test it?",
+    "Who did you ask for clarification?",
+    "What did you change after learning more?"
+  ],
+  "twist": {
+    "kind": "behavioral-probe",
+    "prompt": "Suppose the person who can clarify the requirements is unavailable for a week. What would you do and what would you avoid committing to?"
+  },
+  "hints": [],
+  "rubric": [
+    {
+      "competencyId": "ownership",
+      "name": "Ownership",
+      "anchors": {
+        "new-grad": {
+          "strong": "Distinguishes personal actions from team actions; with reasonable prompts, makes assumptions visible and validates the riskiest uncertainty early.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently distinguishes personal actions from team actions; makes assumptions visible and validates the riskiest uncertainty early, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively distinguishes personal actions from team actions; makes assumptions visible and validates the riskiest uncertainty early, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "judgment",
+      "name": "Judgment",
+      "anchors": {
+        "new-grad": {
+          "strong": "Explains choices and trade-offs; with reasonable prompts, makes assumptions visible and validates the riskiest uncertainty early.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently explains choices and trade-offs; makes assumptions visible and validates the riskiest uncertainty early, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively explains choices and trade-offs; makes assumptions visible and validates the riskiest uncertainty early, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "collaboration",
+      "name": "Collaboration",
+      "anchors": {
+        "new-grad": {
+          "strong": "Communicates respectfully with the people affected; with reasonable prompts, makes assumptions visible and validates the riskiest uncertainty early.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently communicates respectfully with the people affected; makes assumptions visible and validates the riskiest uncertainty early, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively communicates respectfully with the people affected; makes assumptions visible and validates the riskiest uncertainty early, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "reflection",
+      "name": "Reflection",
+      "anchors": {
+        "new-grad": {
+          "strong": "Connects results to specific lessons and subsequent changes; with reasonable prompts, makes assumptions visible and validates the riskiest uncertainty early.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently connects results to specific lessons and subsequent changes; makes assumptions visible and validates the riskiest uncertainty early, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively connects results to specific lessons and subsequent changes; makes assumptions visible and validates the riskiest uncertainty early, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    }
+  ]
+}

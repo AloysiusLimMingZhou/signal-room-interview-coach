@@ -88,6 +88,7 @@ When `P1_API_URL` is unset in development/test, the BFF retains the local P0 pat
 | Web | Next.js 16 App Router, React 19, TypeScript, project-owned CSS | Implemented |
 | Lifecycle/workbench | XState, Monaco, lightweight structured canvas | Implemented |
 | Provider boundary | Deterministic mock and Gemini adapters | Implemented |
+| Phase 2 foundations | Ten versioned Coding/Behavioral questions, selection, shared interviewer instructions | Implemented and unit-tested; session wiring follows |
 | Hosting | Vercel frontend plus AWS Singapore backend | First deployment remains Task 16 |
 | Application plane | CDK, HTTP API, four ARM Node.js 22 Lambdas: session/event/grader/account | Implemented, not deployed |
 | Identity | Cognito Hosted UI, code + PKCE, invite-only owner/guest groups | Implemented, not deployed |
@@ -123,6 +124,16 @@ P1 credentials are limited to the selected configuration, are single-use for ses
 Context compression starts at 25,000 tokens with an 8,000-token sliding window. Session resumption is enabled. Persisting resumption handles and a complete GoAway/network-loss recovery experience are deferred. Provider switching in the middle of speech is unsupported.
 
 References: [Live API](https://ai.google.dev/gemini-api/docs/live-api), [ephemeral tokens](https://ai.google.dev/gemini-api/docs/live-api/ephemeral-tokens), [session management](https://ai.google.dev/gemini-api/docs/live-api/session-management), and [Live API practices](https://ai.google.dev/gemini-api/docs/live-api/best-practices).
+
+### Phase 2 question and interviewer foundation
+
+The owner authorized local Phase 2 development while the real deployment checkpoint remains pending. The [Phase 2 plan](./docs/superpowers/plans/2026-09-24-signal-room-v2-phase2.md) records the implementation sequence and live verification gaps. This foundation does not yet change session creation or the visible interview tracks.
+
+`content/questions/<track>/<slug>.v<n>.json` contains five Coding and five Behavioral questions, each supporting new-grad, mid and senior. Strict Zod schemas validate versioned IDs, track-specific artifacts, level anchors and unique competencies. The full bank is imported only under the Lambda boundary. The public projection includes only ID, title, prompt, selected language and starter code; rubrics, hints, follow-ups and twists stay server-side. Keep old question versions available for stored sessions.
+
+Selection filters by track/level, excludes the caller's latest twenty question IDs, and picks uniformly using an injectable random source. If all eligible questions were seen, it picks the least recently used. The shared interviewer builds the selected opening question, selected-level anchors, phases, hint ladder and explicit twist/time controls. Coding voice declares only view_code; text uses supplied workspace and no tool. Candidate input is untrusted evidence and cannot change interviewer rules. Four snapshots pin track/channel behavior.
+
+Official documentation checked on 2026-09-24 supports same-token resumption with uses=1 and synchronous function calling on the pinned Live model. Actual token constraints, control-event behavior, Cognito claims and browser capture remain owner-run checks. No model or cap changes are implied by the foundation.
 
 ## 7. Authentication and web security
 
@@ -287,6 +298,8 @@ Use Node.js 22 and **pnpm 11.19.0 exactly**. Normal installs use `pnpm install -
 
 GitHub Actions has quality, infrastructure, and browser jobs. Quality runs the dependency audit, lint, typecheck, Jest coverage, production build, and client-bundle secret scan. Infrastructure runs tests and test-stage synthesis. Browser depends on both and runs the Chromium mock journey. Actions are SHA-pinned; CodeQL, dependency review, and Dependabot supplement CI. Require all three CI jobs green before merging lane PRs into `feature/v2-phase1` and before the owner approves the integration PR into `main`.
 
+Phase 2 uses a separate `feature/v2-phase2` integration branch based on the verified Phase 1 tree. Its lane PRs use the same three CI gates, and merging either phase into main still requires owner approval. Keep deployment disabled until the owner completes the manual checkpoint.
+
 Only GitHub environments `development` and `production` are used, mapping to CDK stages dev/prod. Development auto-deploys from a successful trusted main push only when `P1_AWS_DEPLOY_ENABLED=true`. Production is manual, main-only, reviewer-gated, and requires successful push CI on the selected revision. Leave automatic deployment disabled until the owner completes setup. GitHub OIDC supplies temporary AWS credentials.
 
 Deployment inputs are AWS_DEPLOY_ROLE_ARN, AWS_REGION (ap-southeast-1), P1_ALLOWED_ORIGIN, the six VOICE/TEXT monthly-limit variables, VOICE_SESSION_MINUTES, and production secret ALERT_EMAIL. Optional P1_HEALTHCHECK_URL/P1_SMOKE_PATH configure the anonymous smoke. Cap validation runs during synthesis. The owner creates the stage SecureString separately; no standard Gemini key enters GitHub or Lambda environment variables.
@@ -295,13 +308,13 @@ Deploy AWS before Vercel and keep `/v1` backward compatible. Vercel uses the man
 
 ## 15. Testing contract
 
-No automated test calls real AWS or Gemini. Mock SDK/provider boundaries; synthesize with stage=test. Task 15 verifies 90 application tests across 19 suites, 113 infrastructure tests across 11 suites, and one Chromium candidate journey. The integration PR records the exact verified revision and GitHub Actions results.
+No automated test calls real AWS or Gemini. Mock SDK/provider boundaries; synthesize with stage=test. The Phase 2 foundation extends the suite to 98 application tests across 21 suites, 118 infrastructure tests across 12 suites, four interviewer snapshots, and one Chromium candidate journey. The integration PR records the exact verified revision and GitHub Actions results.
 
 Application tests cover lifecycle/cost/scorecards, evidence schemas/retries, account/report contracts, PKCE/state/cookies, origin/body guards, safe logs, BFF response validation, and secret non-disclosure. Infrastructure tests cover access policies and caps, idempotent reservations, history transactions, account IDOR/cursor isolation, grader outcomes and index-write failures, cached SSM reads, production-only EMF, and synthesized auth/IAM/monitoring restrictions.
 
 Playwright exercises one deterministic mock candidate journey using a stubbed session response against the production UI. Real microphone/provider behavior, Cognito claims, billing, and deployed permissions require the owner checkpoint. No mock test proves those live properties.
 
-Task 15 also reviews the Phase 1 diff against OWASP A01–A10. Existing source-size exceptions are interview-app.tsx (574 lines, split in Phase 2) and event-handler.ts (457 lines, existing near-limit exception). Hand-written config validation remains an explicit allowlist boundary. The unused idempotency type export is a cosmetic backend cleanup.
+Task 15 also reviews the Phase 1 diff against OWASP A01–A10. Existing source-size exceptions are interview-app.tsx (574 lines, split in Phase 2) and event-handler.ts (457 lines, existing near-limit exception). Hand-written config validation remains an explicit allowlist boundary. The unused idempotency type export is removed without changing its return contract.
 
 ## 16. Acceptance and SLOs
 
@@ -359,3 +372,4 @@ Required before public production: deletion/export, privacy consent, reconnect r
 | 2026-09-24 | Add ownership-checked account/report reads and derived history | Expose stored results while preserving tenant isolation and grading idempotency |
 | 2026-09-24 | Restore all CI gates before integration | Patch vulnerable build dependencies without bypassing audit policy |
 | 2026-09-24 | Add allowlisted BFF failure diagnostics | Correlate failed account reads without logging interview content, credentials, or resource identifiers |
+| 2026-09-24 | Begin Phase 2 with a server-only versioned question bank and shared interviewer (D4–D6) | Build and test the interview foundation while keeping real deployment/provider checks explicit |

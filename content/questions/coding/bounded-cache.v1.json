@@ -1,0 +1,106 @@
+{
+  "id": "coding.bounded-cache.v1",
+  "track": "coding",
+  "levels": [
+    "new-grad",
+    "mid",
+    "senior"
+  ],
+  "title": "Implement a bounded recent-use cache",
+  "prompt": "Implement an LRU cache for string keys and string values with a positive capacity. get(key) returns the value, or null when absent, and marks a hit as most recently used. put(key, value) inserts or replaces a value and marks it most recently used. If a new key exceeds capacity, evict the least recently used key. Aim for average O(1) get and put. Explain the invariants and show what happens for capacity 2: put('a','1'), put('b','2'), get('a'), put('c','3'), get('b').",
+  "starterCode": {
+    "python": "class LruCache:\n    def __init__(self, capacity: int):\n        pass\n\n    def get(self, key: str) -> str | None:\n        pass\n\n    def put(self, key: str, value: str) -> None:\n        pass\n",
+    "javascript": "class LruCache {\n  constructor(capacity) {}\n  get(key) { return null; }\n  put(key, value) {}\n}\n",
+    "typescript": "class LruCache {\n  constructor(capacity: number) {}\n  get(key: string): string | null { return null; }\n  put(key: string, value: string): void {}\n}\n",
+    "java": "import java.util.*;\n\nclass LruCache {\n    LruCache(int capacity) {}\n    String get(String key) { return null; }\n    void put(String key, String value) {}\n}\n",
+    "cpp": "#include <optional>\n#include <string>\nusing namespace std;\n\nclass LruCache {\npublic:\n    explicit LruCache(int capacity) {}\n    optional<string> get(const string& key) { return nullopt; }\n    void put(const string& key, const string& value) {}\n};\n"
+  },
+  "followUps": [
+    "Does replacing an existing key change the number of entries?",
+    "How do you keep lookup and recency structures consistent?",
+    "What happens at capacity one and on a missing get?"
+  ],
+  "twist": {
+    "kind": "follow-up-constraint",
+    "prompt": "Entries now have a time-to-live. Explain how expiration interacts with recency and which complexity guarantees you can retain."
+  },
+  "hints": [
+    "A lookup map alone does not encode recency changes efficiently.",
+    "Think of a structure that removes and moves a known entry in constant time.",
+    "Maintain explicit invariants between the lookup map and the recency order."
+  ],
+  "rubric": [
+    {
+      "competencyId": "problem-solving",
+      "name": "Problem solving",
+      "anchors": {
+        "new-grad": {
+          "strong": "Clarifies the task and explains a workable approach; with reasonable prompts, keeps lookup and recency consistent through replacement and eviction.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently clarifies the task and explains a workable approach; keeps lookup and recency consistent through replacement and eviction, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively clarifies the task and explains a workable approach; keeps lookup and recency consistent through replacement and eviction, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "correctness",
+      "name": "Correctness",
+      "anchors": {
+        "new-grad": {
+          "strong": "Checks examples and boundaries; with reasonable prompts, keeps lookup and recency consistent through replacement and eviction.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently checks examples and boundaries; keeps lookup and recency consistent through replacement and eviction, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively checks examples and boundaries; keeps lookup and recency consistent through replacement and eviction, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "complexity",
+      "name": "Complexity and trade-offs",
+      "anchors": {
+        "new-grad": {
+          "strong": "Explains time and space costs; with reasonable prompts, keeps lookup and recency consistent through replacement and eviction.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently explains time and space costs; keeps lookup and recency consistent through replacement and eviction, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively explains time and space costs; keeps lookup and recency consistent through replacement and eviction, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    },
+    {
+      "competencyId": "communication",
+      "name": "Communication",
+      "anchors": {
+        "new-grad": {
+          "strong": "Explains decisions and responds to probes; with reasonable prompts, keeps lookup and recency consistent through replacement and eviction.",
+          "weak": "Gives an unclear approach or generic claims and cannot explain a concrete example after a prompt."
+        },
+        "mid": {
+          "strong": "Independently explains decisions and responds to probes; keeps lookup and recency consistent through replacement and eviction, tests assumptions and explains alternatives.",
+          "weak": "Needs repeated direction, omits important edge cases or trade-offs, and provides little evidence for decisions."
+        },
+        "senior": {
+          "strong": "Proactively explains decisions and responds to probes; keeps lookup and recency consistent through replacement and eviction, anticipates failure modes and calibrates decisions to wider constraints.",
+          "weak": "Claims broad expertise without concrete reasoning, overlooks systemic risks, or does not adapt when constraints change."
+        }
+      }
+    }
+  ]
+}
